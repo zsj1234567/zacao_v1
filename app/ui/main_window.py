@@ -896,9 +896,12 @@ class MainWindow(QMainWindow):
         QApplication.processEvents() # 强制 UI 刷新以显示日志
 
     def on_analysis_complete(self, success, message):
-        logging.info(f"分析完成: success={success}, message='{message}'")
+        # logging.info(f"分析完成: success={success}, message='{message}'") # 移除原始详细日志
+        completion_status = "成功完成" if success else "失败"
         self.progress_bar.setValue(100 if success else self.progress_bar.value())
-        self.append_log(f"\n--- {message} ---")
+        # --- 修改：只记录状态，不记录完整 message（JSON） ---
+        self.append_log(f"\n--- 分析{completion_status} --- ")
+        # --- 结束修改 ---
 
         # 恢复按钮状态和输入
         self.start_button.setEnabled(True)

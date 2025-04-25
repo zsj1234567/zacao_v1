@@ -10,6 +10,7 @@ import numpy as np
 import cv2
 import json # For saving calibration
 from typing import Optional, List # Import Optional and List
+import logging
 
 class ImageViewerWidget(QWidget):
     """用于显示图像、预览和进行校准的可视化窗口部件"""
@@ -134,106 +135,48 @@ class ImageViewerWidget(QWidget):
 
     def load_images(self, paths: list[str]):
         """加载图像路径列表并生成预览图 (接收一个路径列表或单个路径字符串)"""
-        # # --- DEBUG PRINTS ---
-        # print(f"[Viewer load_images DEBUG] Received paths type: {type(paths)}")
-        # print(f"[Viewer load_images DEBUG] Received paths value: {paths}")
-        # # --- END DEBUG PRINTS ---
-
-        # --- FIX: Handle receiving a single string path --- #
         if isinstance(paths, str):
-            # print("[Viewer load_images] Received a string, converting to list.") # No longer needed
             paths = [paths]
         elif not isinstance(paths, list):
-             print(f"[Viewer load_images] Error: Received unexpected type: {type(paths)}. Clearing.")
-             paths = [] # Treat unexpected types as empty
-        # --- END FIX ---
+             paths = []
 
-        self.image_paths = paths # Store the definitive list of original image paths
-
-        # --- FIX: Set view mode to original and populate --- #
+        self.image_paths = paths
         self.current_image_path = self.image_paths[0] if self.image_paths else None
-        self._set_view_mode(0) # Switch to original view, which populates preview & displays first image
+        self._set_view_mode(0)
 
-        # --- FIX 1: Explicitly ensure first image displays after loading new paths --- #
         if self.image_paths:
-             # display_image handles case where it's already displayed
-             self.display_image(self.image_paths[0])
-        # --- END FIX 1 ---
-
-        # --- Old logic (commented out) ---
-        # self.preview_list.clear()
-        # self.pixmaps.clear()
-        # self.clear_results() # Clear previous results when loading new images
-        # self.loaded_calibration_points.clear() # Clear loaded points
-        #
-        # for path in self.image_paths:
-        #     if path not in self.pixmaps:
-        #         # ... (load thumbnail) ...
-        #
-        #     if path in self.pixmaps:
-        #         # ... (add item to preview_list) ...
-        #
-        # # 默认选中并显示第一张图片
-        # if self.image_paths:
-        #     if self.preview_list.count() > 0:
-        #         self.preview_list.setCurrentRow(0)
-        #         # 显式调用 display_image 以确保加载第一个图像
-        #         print(f"[Viewer] Explicitly loading first image: {os.path.basename(self.image_paths[0])}")
-        #         self.display_image(self.image_paths[0])
-        #     else:
-        #          # ... (handle no items added) ...
-        # else:
-        #     # ... (handle no images loaded) ...
-        # --- End Old logic ---
+            self.display_image(self.image_paths[0])
+        else:
+             print("[Viewer] No valid images loaded, view cleared.")
 
     def display_image(self, image_path: str):
         """加载并显示指定路径的原始图像，重置状态。"""
-        # --- 增加日志记录 --- #
-        print(f"[Viewer display_image] Attempting to display ORIGINAL: {os.path.basename(image_path)}")
+        self.current_image_path = image_path
+        self.calibration_points = []
 
-        # Path is different, proceed with full state reset and load
-        self.current_image_path = image_path # Update the current original image context
-        self.calibration_points = [] # Clear potential old points
-        # Reset view mode to original IF NOT ALREADY
         if self.current_view_mode != 'original':
-             print("[Viewer display_image] Was not in original mode, switching back.")
-             # This might re-trigger things, consider if direct state reset is better
-             # self._set_view_mode(0)
-             # Direct state reset:
              self.current_view_mode = 'original'
              self.is_calibration_mode = False
              self.calibration_controls_widget.setVisible(False)
              self.graphics_view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
              self.graphics_view.viewport().setCursor(Qt.CursorShape.ArrowCursor)
              self.view_original_button.setChecked(True)
-             # We assume _populate_preview_list for original was called by _set_view_mode
 
-        # Reset common states
         self.is_calibration_mode = False
         self.calibration_controls_widget.setVisible(False)
         self.graphics_view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.graphics_view.viewport().setCursor(Qt.CursorShape.ArrowCursor)
 
-        # Attempt to load
         success = self._load_and_display_base_image(image_path)
 
         if success:
-            # Enable buttons based on loaded image
             self.view_calibration_button.setEnabled(True)
-            # --- FIX: Update button enabling logic --- #
             result_dict = self.result_image_map.get(image_path, {})
             has_image_paths = any(isinstance(v, str) for k, v in result_dict.items() if k != 'calibration_points')
-            # --- Add Logging --- #
-            print(f"[Viewer display_image DEBUG] Button Check for: {os.path.basename(image_path)}")
-            print(f"[Viewer display_image DEBUG]  - Result Dict Keys: {list(result_dict.keys())}")
-            print(f"[Viewer display_image DEBUG]  - Has Image Paths: {has_image_paths}")
-            # --- End Logging ---
             self.view_result_button.setEnabled(has_image_paths)
-            # --- END FIX --- #
         else:
-            # Handle error
-            self.current_image_path = None # Revert path if loading failed
-            self.graphics_view.setScene(None) # Clear the view
+            self.current_image_path = None
+            self.graphics_view.setScene(None)
             self.view_calibration_button.setEnabled(False)
             self.view_result_button.setEnabled(False)
 
@@ -243,7 +186,7 @@ class ImageViewerWidget(QWidget):
            Does NOT change the view mode state.
         """
         if not image_path:
-            print("[Viewer _load_and_display] Error: No image path provided.")
+            logging.error("[Viewer] Error: No image path provided for loading.")
             return False
 
         full_pixmap = None
@@ -255,37 +198,27 @@ class ImageViewerWidget(QWidget):
             q_image = QImage(img_rgb.data, img_rgb.shape[1], img_rgb.shape[0], img_rgb.strides[0], QImage.Format.Format_RGB888)
             full_pixmap = QPixmap.fromImage(q_image)
         except Exception as e:
-            print(f"[Viewer _load_and_display] Error loading/reloading full image '{os.path.basename(image_path)}': {e}")
+            logging.error(f"[Viewer] Error loading/reloading image '{os.path.basename(image_path)}': {e}")
             self.graphics_view.setScene(None)
-            self.current_pixmap_item = None # Ensure it's None on error
+            self.current_pixmap_item = None
             return False
 
-        # --- 修改：复用或创建场景 --- #
         scene = self.graphics_view.scene()
         if scene:
              scene.clear()
-             print(f"[Viewer _load_and_display] Cleared existing scene for {os.path.basename(image_path)}")
-             self.current_scene = scene # Keep reference
+             self.current_scene = scene
         else:
              self.current_scene = QGraphicsScene()
              self.graphics_view.setScene(self.current_scene)
-             print(f"[Viewer _load_and_display] Created new scene for {os.path.basename(image_path)}")
-        # --- 结束修改 ---
 
-        # Add pixmap to the scene
         if full_pixmap:
             self.current_pixmap_item = self.current_scene.addPixmap(full_pixmap)
-            self.graphics_view.fitInView(self.current_pixmap_item, Qt.AspectRatioMode.KeepAspectRatio) # Fit view
-            # --- Force update --- #
-            self.current_scene.update() # Request scene update
-            self.graphics_view.viewport().update() # Request viewport update
-            # --- End Force update --- #
-            print(f"[Viewer _load_and_display] Successfully loaded and displayed {os.path.basename(image_path)}. Pixmap item set.")
-            # Do not redraw calibration points here - only when entering calibration mode
+            self.graphics_view.fitInView(self.current_pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+            self.current_scene.update()
+            self.graphics_view.viewport().update()
             return True
         else:
-            # This case should not happen if exception handling above works
-            print(f"[Viewer _load_and_display] CRITICAL ERROR: full_pixmap is None after loading {os.path.basename(image_path)}")
+            logging.critical(f"[Viewer] CRITICAL ERROR: full_pixmap is None after loading {os.path.basename(image_path)}")
             self.current_pixmap_item = None
             self.graphics_view.setScene(None)
             return False
@@ -298,7 +231,7 @@ class ImageViewerWidget(QWidget):
         """执行进入手动校准模式的逻辑 (加载图像、点、设置控件等)
            假定调用此函数时，视图模式已经是 'calibration'。
         """
-        print(f"[Viewer _enter_calibration_logic] Entering logic for: {os.path.basename(image_path)}")
+        logging.info(f"[Viewer _enter_calibration_logic] Entering logic for: {os.path.basename(image_path)}")
 
         # Check if target image is the current context
         is_already_current = (image_path == self.current_image_path)
@@ -307,7 +240,7 @@ class ImageViewerWidget(QWidget):
         # 1. Ensure the base image is loaded and displayed
         if not is_already_current:
             # If it's a new image, load it (display_image handles setting self.current_image_path)
-            print(f"[Viewer _enter_calibration_logic] Calibration target '{os.path.basename(image_path)}' is not current. Loading original...")
+            logging.info(f"[Viewer _enter_calibration_logic] Calibration target '{os.path.basename(image_path)}' is not current. Loading original...")
             # Call display_image which uses _load_and_display_base_image
             self.display_image(image_path)
             # Check if display_image was successful (it calls _load_and_display_base_image)
@@ -323,25 +256,25 @@ class ImageViewerWidget(QWidget):
                            self.preview_list.blockSignals(False)
                            break
             else:
-                 print(f"[Viewer _enter_calibration_logic] Error: Failed to load original image {image_path} for calibration.")
+                 logging.error(f"[Viewer] Failed to load image {image_path} for calibration.")
                  QMessageBox.warning(self, "加载错误", f"无法加载用于校准的图像:\n{os.path.basename(image_path)}")
-                 return # Stop if loading fails
+                 return
         elif not self.current_pixmap_item or not self.current_pixmap_item.scene():
             # If it *was* the current image, but pixmap/scene is missing, try reloading.
-            print(f"[Viewer _enter_calibration_logic] Calibration target '{os.path.basename(image_path)}' is current, but pixmap/scene missing. Reloading original...")
+            logging.warning(f"[Viewer _enter_calibration_logic] Calibration target '{os.path.basename(image_path)}' is current, but pixmap/scene missing. Reloading original...")
             load_success = self._load_and_display_base_image(image_path)
             if not load_success:
-                 print(f"[Viewer _enter_calibration_logic] Error: Failed to reload current image {image_path} for calibration.")
+                 logging.error(f"[Viewer] Failed to reload current image {image_path} for calibration.")
                  QMessageBox.warning(self, "加载错误", f"无法重新加载当前图像以进行校准:\n{os.path.basename(image_path)}")
-                 return # Stop if reloading fails
+                 return
         else:
             # Image is current and pixmap/scene seems okay
-            print(f"[Viewer _enter_calibration_logic] Calibration target '{os.path.basename(image_path)}' is current and seems loaded.")
+            logging.debug(f"[Viewer _enter_calibration_logic] Calibration target '{os.path.basename(image_path)}' is current and seems loaded.")
             load_success = True # Assume success as it's already loaded
 
         # 2. Proceed only if image is loaded successfully
         if load_success and self.current_image_path == image_path and self.current_pixmap_item and self.current_pixmap_item.scene():
-            print(f"[Viewer _enter_calibration_logic] Entering calibration mode setup for: {os.path.basename(image_path)}")
+            logging.info(f"[Viewer _enter_calibration_logic] Entering calibration mode for: {os.path.basename(image_path)}")
 
             self.is_calibration_mode = True
             # self.current_view_mode = 'calibration' # Should be set by _set_view_mode(1)
@@ -349,10 +282,10 @@ class ImageViewerWidget(QWidget):
             # Load existing points for this image or clear if none
             if self.current_image_path in self.loaded_calibration_points:
                 self.calibration_points = self.loaded_calibration_points[self.current_image_path][:] # Use a copy
-                print(f"[Viewer _enter_calibration_logic] Loaded {len(self.calibration_points)} existing calibration points.")
+                logging.info(f"[Viewer] Loaded {len(self.calibration_points)} existing calibration points.")
             else:
                 self.calibration_points = []
-                print("[Viewer _enter_calibration_logic] No existing calibration points found, starting fresh.")
+                logging.info("[Viewer _enter_calibration_logic] No existing calibration points found, starting fresh.")
 
             # Update UI elements for calibration mode
             self.calibration_controls_widget.setVisible(True)
@@ -362,11 +295,11 @@ class ImageViewerWidget(QWidget):
 
             # Draw points (this relies on the pixmap item being correctly set)
             self._redraw_calibration_points()
-            print(f"[Viewer _enter_calibration_logic] Calibration mode successfully entered for: {os.path.basename(image_path)}")
+            logging.info(f"[Viewer _enter_calibration_logic] Calibration mode successfully entered for: {os.path.basename(image_path)}")
 
         else:
             # This case should ideally not be reached if the logic above is correct
-            print(f"[Viewer _enter_calibration_logic] Critical Error: Failed to enter calibration mode. Image '{os.path.basename(image_path)}' loaded state inconsistent.")
+            logging.critical(f"[Viewer] Critical Error: Failed to enter calibration mode. Image '{os.path.basename(image_path)}' loaded state inconsistent.")
             QMessageBox.critical(self, "内部错误", f"无法进入校准模式。\n图像加载状态异常，请重试或检查日志。")
             # Reset potentially inconsistent state?
             self.is_calibration_mode = False
@@ -382,7 +315,7 @@ class ImageViewerWidget(QWidget):
             # No item selected, clear the main view? (Let's avoid clearing for now)
             # self.graphics_view.setScene(None)
             # self.current_pixmap_item = None
-            print("[Viewer _on_preview_selected] No item selected. View remains unchanged.")
+            logging.info("[Viewer _on_preview_selected] No item selected. View remains unchanged.")
             return
 
         selected_data = current_item.data(Qt.ItemDataRole.UserRole)
@@ -392,13 +325,13 @@ class ImageViewerWidget(QWidget):
                 original_path = selected_data
                 # --- FIX: Only display if path is different OR pixmap is missing --- #
                 if original_path != self.current_image_path or not self.current_pixmap_item:
-                    print(f"[Viewer _on_preview_selected] Original/Calib mode: Selection changed or pixmap missing. Displaying {os.path.basename(original_path)}")
+                    logging.info(f"[Viewer _on_preview_selected] Original/Calib mode: Selection changed or pixmap missing. Displaying {os.path.basename(original_path)}")
                     self.display_image(original_path) # Handles setting self.current_image_path and loading
                 else:
-                    print(f"[Viewer _on_preview_selected] Original/Calib mode: Selected image ({os.path.basename(original_path)}) is already displayed. Doing nothing.")
+                    logging.debug(f"[Viewer _on_preview_selected] Original/Calib mode: Selected image ({os.path.basename(original_path)}) is already displayed. Doing nothing.")
                 # --- END FIX --- #
             else:
-                 print(f"[Viewer _on_preview_selected] Error: Expected string path in original/calibration mode, got {type(selected_data)}")
+                 logging.warning(f"[Viewer] Error: Expected string path in original/calibration mode, got {type(selected_data)}")
 
         elif self.current_view_mode == 'result':
             if isinstance(selected_data, tuple) and len(selected_data) == 2:
@@ -406,14 +339,14 @@ class ImageViewerWidget(QWidget):
                 # --- FIX: Only display if result path is different OR pixmap is missing --- #
                 # Check if the result image is already displayed (tricky without storing current result path explicitly)
                 # Let's always reload the result image for simplicity for now, but avoid changing mode state.
-                print(f"[Viewer _on_preview_selected] Result mode: Selected {result_type}. Displaying {os.path.basename(result_path)}")
+                logging.info(f"[Viewer _on_preview_selected] Result mode: Selected {result_type}. Displaying {os.path.basename(result_path)}")
                 self._load_and_display_base_image(result_path)
                 # --- END FIX --- #
             else:
-                 print(f"[Viewer _on_preview_selected] Error: Expected tuple (type, path) in result mode, got {type(selected_data)}")
+                 logging.warning(f"[Viewer] Error: Expected tuple (type, path) in result mode, got {type(selected_data)}")
 
         else:
-            print(f"[Viewer _on_preview_selected] Unknown view mode: {self.current_view_mode}")
+            logging.warning(f"[Viewer _on_preview_selected] Unknown view mode: {self.current_view_mode}")
 
     def _set_view_mode(self, mode_id: int, target_image_path: Optional[str] = None):
         """根据按钮点击设置视图模式。 0: original, 1: calibration, 2: result"""
@@ -424,7 +357,7 @@ class ImageViewerWidget(QWidget):
         if not effective_image_path and mode_id != 0:
             # If no image context, only allow switching back to (empty) original view
             if mode_id == 0:
-                 print("[Viewer _set_view_mode] No image loaded, switching to empty original view.")
+                 logging.info("[Viewer _set_view_mode] No image loaded, switching to empty original view.")
                  self.current_view_mode = 'original'
                  self.is_calibration_mode = False
                  self.calibration_controls_widget.setVisible(False)
@@ -437,7 +370,7 @@ class ImageViewerWidget(QWidget):
                  self.view_result_button.setEnabled(False)
             else:
                  # Prevent switching to calibration/result if no image context
-                 print(f"[Viewer _set_view_mode] Prevented switching to mode {mode_id} because no image context exists.")
+                 logging.info(f"[Viewer _set_view_mode] Prevented switching to mode {mode_id} because no image context exists.")
                  # Re-check the button corresponding to the actual current mode
                  if self.current_view_mode == 'original': self.view_original_button.setChecked(True)
                  elif self.current_view_mode == 'calibration': self.view_calibration_button.setChecked(True)
@@ -446,7 +379,7 @@ class ImageViewerWidget(QWidget):
 
         # --- Handle Mode Switching --- #
         if mode_id == 0: # Original
-            print("[Viewer _set_view_mode] Switching to Original mode.")
+            logging.info("[Viewer _set_view_mode] Switching to Original mode.")
 
             # --- FIX 1 & 2: Final attempt at stable switching --- #
             # 1. Set mode state and UI elements first
@@ -461,12 +394,12 @@ class ImageViewerWidget(QWidget):
             image_loaded_successfully = False
             if effective_image_path:
                  # Call display_image. It now only reloads if necessary.
-                 print(f"[Viewer _set_view_mode] Calling display_image for Original: {os.path.basename(effective_image_path)}")
+                 logging.info(f"[Viewer _set_view_mode] Calling display_image for Original: {os.path.basename(effective_image_path)}")
                  self.display_image(effective_image_path)
                  # Check if display_image succeeded in setting the pixmap item
                  image_loaded_successfully = (self.current_image_path == effective_image_path and self.current_pixmap_item is not None)
             else:
-                 print("[Viewer _set_view_mode] No effective image path for Original mode. Clearing graphics view.")
+                 logging.info("[Viewer _set_view_mode] No effective image path for Original mode. Clearing graphics view.")
                  self.current_image_path = None
                  self.current_pixmap_item = None
                  self.graphics_view.setScene(None) # Explicitly clear scene
@@ -480,12 +413,12 @@ class ImageViewerWidget(QWidget):
                 for i in range(self.preview_list.count()):
                     item = self.preview_list.item(i)
                     if item and item.data(Qt.ItemDataRole.UserRole) == self.current_image_path:
-                        print(f"[Viewer _set_view_mode] Found item for {os.path.basename(self.current_image_path)} at row {i}. Setting current row.")
+                        logging.debug(f"[Viewer _set_view_mode] Found item for {os.path.basename(self.current_image_path)} at row {i}. Setting current row.")
                         self.preview_list.setCurrentRow(i) # Let signals fire
                         selected_row = i
                         break
                 if selected_row == -1:
-                    print("[Viewer _set_view_mode] Warning: Could not find list item for current image path after populating.")
+                    logging.warning("[Viewer _set_view_mode] Warning: Could not find list item for current image path after populating.")
             else:
                  self.preview_list.setCurrentRow(-1) # Ensure no selection if no image
 
@@ -497,11 +430,11 @@ class ImageViewerWidget(QWidget):
             # --- End FIX 1 & 2 ---
 
         elif mode_id == 1: # Calibration
-            print("[Viewer _set_view_mode] Switching to Calibration mode.")
+            logging.info("[Viewer _set_view_mode] Switching to Calibration mode.")
             path_to_calibrate = target_image_path if target_image_path else self.current_image_path
 
             if not path_to_calibrate:
-                print("[Viewer _set_view_mode] Cannot enter Calibration mode: No image specified or loaded.")
+                logging.warning("[Viewer _set_view_mode] Cannot enter Calibration mode: No image specified or loaded.")
                 # Switch back to original view
                 self._set_view_mode(0)
                 return
@@ -515,12 +448,12 @@ class ImageViewerWidget(QWidget):
             self._enter_calibration_logic(path_to_calibrate)
 
         elif mode_id == 2: # Result
-            print("[Viewer _set_view_mode] Switching to Result mode.")
+            logging.info("[Viewer _set_view_mode] Switching to Result mode.")
             if not self.current_image_path: return # Should be handled above
 
             result_path_dict = self.result_image_map.get(self.current_image_path, {})
             if not result_path_dict:
-                print("[Viewer _set_view_mode] No results available for the current image.")
+                logging.warning("[Viewer _set_view_mode] No results available for the current image.")
                 QMessageBox.information(self, "无结果", "当前图像没有可用的分析结果。")
                 # Switch back to original view if no results
                 self._set_view_mode(0)
@@ -555,7 +488,7 @@ class ImageViewerWidget(QWidget):
         # --- End Bug Fix 1 ---
 
         if mode == 'original':
-            print("[Viewer _populate_preview_list] Populating with ORIGINAL images.")
+            logging.debug("[Viewer _populate_preview_list] Populating with ORIGINAL images.")
             items_added = 0
             for path in self.image_paths:
                  pixmap = self._load_thumbnail(path)
@@ -580,9 +513,9 @@ class ImageViewerWidget(QWidget):
             #      self.preview_list.setCurrentRow(0)
 
         elif mode == 'result':
-            print("[Viewer _populate_preview_list] Populating with RESULT images.")
+            logging.debug("[Viewer _populate_preview_list] Populating with RESULT images.")
             if not data or not isinstance(data, dict):
-                print("[Viewer _populate_preview_list] No result data provided.")
+                logging.warning("[Viewer _populate_preview_list] No result data provided.")
                 return
 
             items_added = 0
@@ -593,7 +526,7 @@ class ImageViewerWidget(QWidget):
 
             for result_type, result_path in sorted_results:
                 if not result_path or not isinstance(result_path, str) or not os.path.exists(result_path):
-                    print(f"[Viewer] Skipping invalid result path for type '{result_type}': {result_path}")
+                    logging.debug(f"[Viewer] Skipping invalid result path for type '{result_type}': {result_path}")
                     continue
                 pixmap = self._load_thumbnail(result_path)
                 if pixmap:
@@ -613,7 +546,7 @@ class ImageViewerWidget(QWidget):
             if items_added > 0:
                 self.preview_list.setCurrentRow(0) # Select first result
         else:
-             print(f"[Viewer _populate_preview_list] Unknown mode: {mode}")
+             logging.warning(f"[Viewer _populate_preview_list] Unknown mode: {mode}")
 
     def _load_thumbnail(self, path: str) -> Optional[QPixmap]:
         """Loads or retrieves cached thumbnail pixmap for a given path."""
@@ -623,7 +556,7 @@ class ImageViewerWidget(QWidget):
             n = np.fromfile(path, dtype=np.uint8)
             img_bgr = cv2.imdecode(n, cv2.IMREAD_COLOR)
             if img_bgr is None:
-                 print(f"[Viewer _load_thumbnail] Warning: Failed to decode image {path}")
+                 logging.warning(f"[Viewer] Failed to decode thumbnail image {path}")
                  return None
             img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
             q_image = QImage(img_rgb.data, img_rgb.shape[1], img_rgb.shape[0], img_rgb.strides[0], QImage.Format.Format_RGB888)
@@ -632,12 +565,12 @@ class ImageViewerWidget(QWidget):
             self.pixmaps[path] = scaled_pixmap # Cache it
             return scaled_pixmap
         except Exception as e:
-            print(f"[Viewer _load_thumbnail] Error loading image {path}: {e}")
+            logging.error(f"[Viewer] Error loading thumbnail {path}: {e}")
             return None
 
     def _show_result_selector(self):
         """显示结果图像类型选择 (如果需要) - This function is now OBSOLETE and integrated into _set_view_mode(2)"""
-        print("[Viewer _show_result_selector] This function is obsolete.")
+        logging.info("[Viewer _show_result_selector] This function is obsolete.")
         # Kept for reference, but should not be called anymore
         pass
         # if not self.current_image_path or not self.result_image_map.get(self.current_image_path):
@@ -656,14 +589,14 @@ class ImageViewerWidget(QWidget):
                         # 添加点（相对于 pixmap item 的坐标）
                         item_pos = self.current_pixmap_item.mapFromScene(scene_pos).toPoint()
                         self.calibration_points.append((item_pos.x(), item_pos.y()))
-                        print(f"[Viewer] Calibration point {len(self.calibration_points)} added: ({item_pos.x()}, {item_pos.y()})")
+                        logging.info(f"[Viewer] Calibration point {len(self.calibration_points)} added: ({item_pos.x()}, {item_pos.y()})")
                         self._redraw_calibration_points()
                         # Ensure cursor stays as crosshair after adding point
                         self.graphics_view.viewport().setCursor(Qt.CursorShape.CrossCursor)
                         # self.calibration_point_selected.emit(self.current_image_path, item_pos.x(), item_pos.y())
                         return True # 事件已处理
                 else:
-                    print("[Viewer] Max 4 calibration points reached.")
+                    logging.info("[Viewer] Max 4 calibration points reached.")
                     QMessageBox.information(self, "提示", "已选择4个点。请点击 '保存校准' 或 '重置点'。")
                     return True # Prevent other actions while max points reached
 
@@ -680,7 +613,7 @@ class ImageViewerWidget(QWidget):
                  # Remove only calibration artifacts
                  for item in self.current_scene.items():
                             self.current_scene.removeItem(item)
-            print("[Viewer _redraw_calibration_points] Cannot draw points: No scene or no pixmap item.")
+            logging.debug("[Viewer _redraw_calibration_points] Cannot draw points: No scene or no pixmap item.")
             return
  
         # Remove old points and lines first
@@ -696,13 +629,13 @@ class ImageViewerWidget(QWidget):
         # Draw only if in calibration mode and pixmap exists and points exist
         if not self.is_calibration_mode or not self.calibration_points:
              # Clear points visually if not in calibration mode or no points exist
-             print("[Viewer _redraw_calibration_points] Not in calibration mode or no points, clearing visual points.")
+             logging.debug("[Viewer _redraw_calibration_points] Not in calibration mode or no points, clearing visual points.")
              # The removal of old points/lines above handles the clearing
              return
  
         # Check pixmap item again just before drawing
         if not self.current_pixmap_item or not self.current_pixmap_item.scene():
-             print("[Viewer _redraw_calibration_points] Cannot draw points: pixmap item missing or not in scene before drawing.")
+             logging.warning("[Viewer _redraw_calibration_points] Cannot draw points: pixmap item missing or not in scene before drawing.")
              return
  
         # 绘制新的点和线
@@ -721,7 +654,7 @@ class ImageViewerWidget(QWidget):
             # Clamp point coordinates to be within the pixmap bounds
             # Check if pt is valid tuple/list
             if not isinstance(pt, (tuple, list)) or len(pt) != 2:
-                 print(f"[Viewer] Invalid point format skipped: {pt}")
+                 logging.warning(f"[Viewer] Invalid point format skipped: {pt}")
                  continue
             clamped_x = max(0, min(pt[0], pixmap_rect.width()))
             clamped_y = max(0, min(pt[1], pixmap_rect.height()))
@@ -761,12 +694,12 @@ class ImageViewerWidget(QWidget):
             line.setPen(line_pen)
             self.current_scene.addItem(line)
 
-        print(f"[Viewer _redraw_calibration_points] Drawing {len(self.calibration_points)} points.")
+        logging.debug(f"[Viewer _redraw_calibration_points] Drawing {len(self.calibration_points)} points.")
 
     def _reset_calibration_points(self):
         """重置当前图像的校准点"""
         if self.is_calibration_mode:
-            print(f"[Viewer] Resetting calibration points for {os.path.basename(self.current_image_path)}")
+            logging.info(f"[Viewer] Resetting calibration points for {os.path.basename(self.current_image_path)}")
             self.calibration_points = []
             # Also clear from loaded dict if resetting
             if self.current_image_path in self.loaded_calibration_points:
@@ -777,7 +710,7 @@ class ImageViewerWidget(QWidget):
     def _save_calibration(self):
         """保存当前校准点并发出信号"""
         if self.is_calibration_mode and len(self.calibration_points) == 4:
-            print(f"[Viewer] Saving calibration points for {os.path.basename(self.current_image_path)}: {self.calibration_points}")
+            logging.info(f"[Viewer] Saving calibration points for {os.path.basename(self.current_image_path)}: {self.calibration_points}")
             # Save to loaded points dict as well
             self.loaded_calibration_points[self.current_image_path] = self.calibration_points
 
@@ -798,14 +731,14 @@ class ImageViewerWidget(QWidget):
 
                     with open(save_path, 'w') as f:
                         json.dump(ordered_points, f, indent=4) # Use indent for readability
-                    print(f"校准文件已保存到: {save_path}")
+                    logging.info(f"校准文件已保存到: {save_path}")
                     save_successful = True
                 except Exception as e:
-                    print(f"[Viewer] Error saving calibration file {save_path}: {e}")
+                    logging.error(f"[Viewer] Error saving calibration file {save_path}: {e}")
                     QMessageBox.critical(self, "保存错误", f"无法保存校准文件到 {save_path}:\n{e}")
                     save_successful = False
             else:
-                print("[Viewer] Error: Calibration save directory not set.")
+                logging.error("[Viewer] Error: Calibration save directory not set.")
                 QMessageBox.warning(self, "保存错误", "未设置校准文件保存目录。")
                 save_successful = False
 
@@ -815,12 +748,12 @@ class ImageViewerWidget(QWidget):
                 QMessageBox.information(self, "校准已保存", f"{os.path.basename(self.current_image_path)} 的校准点已保存。")
 
         elif self.is_calibration_mode:
-            print("[Viewer] Error: Need exactly 4 points to save calibration.")
+            logging.info("[Viewer] Error: Need exactly 4 points to save calibration.")
             QMessageBox.warning(self, "校准错误", "需要选择4个角点才能保存。")
 
     def exit_calibration_mode(self):
         """退出手动校准模式 (通常在保存后调用)"""
-        print("[Viewer] Exiting calibration mode.")
+        logging.info("[Viewer] Exiting calibration mode.")
         # Set button state back to original
         self.view_original_button.setChecked(True)
         # Trigger view mode change if not already original
@@ -832,7 +765,7 @@ class ImageViewerWidget(QWidget):
         result_path = result_path_dict.get(result_type)
 
         if not result_path:
-            print(f"[Viewer] No result path found for type '{result_type}'. Showing placeholder.")
+            logging.warning(f"[Viewer] No result path found for type '{result_type}'. Showing placeholder.")
             self._show_placeholder_scene(f"结果图像 ({result_type}) 不可用")
             return
 
@@ -841,7 +774,7 @@ class ImageViewerWidget(QWidget):
         if not success:
             self._show_placeholder_scene(f"无法加载结果图像 ({result_type})\n{result_path}")
         else:
-             print(f"[Viewer] Displaying result: {result_type} from {os.path.basename(result_path)}")
+             logging.info(f"[Viewer] Displaying result: {result_type} from {os.path.basename(result_path)}")
              self.current_view_mode = 'result' # Ensure mode is set
              # Optionally add overlay text indicating the result type being shown
              # self._add_overlay_text(f"显示: {result_type}")
@@ -873,7 +806,7 @@ class ImageViewerWidget(QWidget):
             # --- END FIX 2 --- #
 
             num_items = len(self.result_image_map[original_path])
-            print(f"[Viewer] Stored {num_items} result items for {os.path.basename(original_path)}: {list(self.result_image_map[original_path].keys())}")
+            logging.info(f"[Viewer] Stored {num_items} result items for {os.path.basename(original_path)}: {list(self.result_image_map[original_path].keys())}")
 
             # Update UI only if this is the currently displayed image
             if original_path == self.current_image_path:
@@ -883,7 +816,7 @@ class ImageViewerWidget(QWidget):
                  self.view_result_button.setEnabled(has_image_paths)
                  # --- END FIX --- #
                  if self.current_view_mode == 'result':
-                     print("[Viewer] Results updated for current image while in result view. Re-displaying results.")
+                     logging.info("[Viewer] Results updated for current image while in result view. Re-displaying results.")
                      self._set_view_mode(2) # Re-trigger result view display
 
         else:
@@ -902,7 +835,7 @@ class ImageViewerWidget(QWidget):
         # If an image is currently displayed, disable its result button
         if self.current_image_path:
             self.view_result_button.setEnabled(False)
-        print("[Viewer] All result maps cleared.")
+        logging.info("[Viewer] All result maps cleared.")
 
     def get_calibration_points(self) -> Optional[List[List[int]]]:
          """获取当前图像已验证(4点)并转换为整数的校准点"""
@@ -920,7 +853,7 @@ class ImageViewerWidget(QWidget):
              try:
                  return [[int(round(p[0])), int(round(p[1]))] for p in current_points]
              except (TypeError, IndexError) as e:
-                  print(f"[Viewer] Error converting calibration points to int: {e}, points: {current_points}")
+                  logging.error(f"[Viewer] Error converting calibration points to int: {e}, points: {current_points}")
                   return None
          return None
 
@@ -928,11 +861,11 @@ class ImageViewerWidget(QWidget):
     def _handle_button_click(self, button):
         """Receives the clicked button object and calls _set_view_mode with its ID."""
         mode_id = self.view_mode_group.id(button)
-        print(f"[Viewer _handle_button_click] Button '{button.text()}' clicked, ID: {mode_id}")
+        logging.debug(f"[Viewer _handle_button_click] Button '{button.text()}' clicked, ID: {mode_id}")
         if mode_id != -1: # QButtonGroup returns -1 if button not found or has no ID
             self._set_view_mode(mode_id)
         else:
-             print("[Viewer _handle_button_click] Warning: Clicked button has no valid ID in the group.")
+             logging.warning("[Viewer _handle_button_click] Warning: Clicked button has no valid ID in the group.")
     # --- End New Slot --- #
 
     # --- Bug Fix 2: Add wheelEvent for zooming --- #

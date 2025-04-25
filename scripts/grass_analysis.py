@@ -1,3 +1,4 @@
+import logging
 from skimage.morphology import disk
 from skimage.segmentation import watershed as skimage_watershed
 from skimage.feature import peak_local_max
@@ -606,31 +607,21 @@ class GrassAnalyzer:
 
             # 计算实例数量
             unique_instances = np.unique(self.instances)
-            num_instances = len(
-                [i for i in unique_instances if i > 0])  # 只计算正值（跳过背景和边界）
+            num_instances = len([i for i in unique_instances if i > 0])
 
             if method == 'instance_count':
                 return num_instances
 
         if method == 'area_based' or method == 'combined':
-            # 基于面积的密度估计
-            # 计算草的总面积（像素数）
             grass_area = np.sum(self.mask > 0)
-
-            # 估计每株草的平均面积，减小平均面积以增加估计的草数量
-            avg_plant_size = 200  # 减小每株草平均占用的像素数
-
-            # 估计草的数量
+            avg_plant_size = 200
             area_based_count = max(1, int(grass_area / avg_plant_size))
-
             if method == 'area_based':
                 return area_based_count
 
         if method == 'combined':
-            # 结合两种方法，调整权重以增加密度估计
-            if num_instances < 0.5 * area_based_count:  # 提高比例阈值
-                print("警告: 实例分割可能不充分，使用组合方法估计密度")
-                # 增加组合权重
+            if num_instances < 0.5 * area_based_count:
+                logging.warning("[GrassAnalyzer] 实例分割可能不充分，使用组合方法估计密度")
                 return max(num_instances, int(0.5 * (num_instances + area_based_count)))
             else:
                 return num_instances
@@ -639,7 +630,7 @@ class GrassAnalyzer:
 
     def visualize_results(self, save_path=None, layout='default', save_debug=False, calculate_density=True):
         """可视化分析结果，包括原始图像、掩码、实例和密度信息，并选择性保存"""
-        print(f"[Visualize] 开始生成结果图，目标路径: {save_path}, 布局: {layout}") # 添加开始日志
+        # logging.info(f"[Visualize] 开始生成结果图，目标路径: {save_path}, 布局: {layout}") # Remove start log
 
         if self.original_image is None:
             raise ValueError("请先加载图像")
@@ -823,36 +814,35 @@ class GrassAnalyzer:
         try:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
             saved_paths['analysis_image'] = save_path # 主分析图
-            print(f"[Visualize] 结果图像已成功保存到: {save_path}")
+            logging.info(f"[Visualize] 结果图像已保存: {os.path.basename(save_path)}") # Simplified log
         except Exception as e:
-            print(f"[Visualize] 保存合并结果图像时出错: {e}")
-            save_path = None # 标记保存失败
+            logging.error(f"[Visualize] 保存合并结果图像 '{save_path}' 时出错: {e}")
+            save_path = None
         finally:
-            plt.close(fig) # 确保关闭图形
+            plt.close(fig)
 
         # 保存调试图像 (如果 save_debug=True)
         if save_debug:
             output_dir = os.path.dirname(save_path)
             base_filename = os.path.splitext(os.path.basename(save_path))[0]
-            # 移除可能存在的后缀如 _analysis, _default, _simple
             base_filename = base_filename.replace('_analysis', '').replace('_default', '').replace('_simple', '')
 
             debug_images_to_save = {
                 'original': self.original_image,
                 'calibrated': self.calibrated_image,
                 'hsv_mask': self.hsv_mask,
-                'coverage_overlay': coverage_vis if 'coverage_vis' in locals() else None, # 仅当存在时保存
+                'coverage_overlay': coverage_vis if 'coverage_vis' in locals() else None,
             }
             if calculate_density:
                  debug_images_to_save.update({
                      'instance_mask': self.instances if self.instances is not None else None,
                      'instance_overlay': self.debug_images.get('instances'),
-                     'density_overlay': density_vis if 'density_vis' in locals() else None, # 仅当存在时保存
+                     'density_overlay': density_vis if 'density_vis' in locals() else None,
                  })
 
             for key, img_data in debug_images_to_save.items():
                 if img_data is not None:
-                    img_to_write = None # Prepare variable for the final image to write
+                    img_to_write = None
                     # 确保图像是 BGR 或 Grayscale uint8
                     if len(img_data.shape) == 3 and img_data.shape[2] == 3:
                         # --- FIX: Convert RGB to BGR for ALL 3-channel images --- #
