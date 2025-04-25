@@ -5,7 +5,7 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QMainWindow, QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QFileDialog, QProgressBar, QTextEdit, QComboBox,
-    QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox, QMessageBox, QSizePolicy
+    QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox, QMessageBox, QSizePolicy, QStyleFactory
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPalette, QColor, QFont
@@ -47,7 +47,7 @@ class MainWindow(QMainWindow):
         self.loaded_calibration_points = {} # Dict to store loaded/saved points {img_path: points}
 
         # 设置暗色主题 (可选)
-        self.setup_dark_theme()
+        self.apply_stylesheet()
 
         # 初始化日志系统
         setup_logging(self.log_signal)
@@ -77,6 +77,7 @@ class MainWindow(QMainWindow):
         self.input_path_edit.setPlaceholderText("选择单个图片文件或包含图片的文件夹")
         self.browse_input_button = QPushButton("浏览...")
         self.browse_input_button.clicked.connect(self.browse_input)
+        self.browse_input_button.setObjectName("browse_button") # For styling
         input_layout.addWidget(self.input_label)
         input_layout.addWidget(self.input_path_edit)
         input_layout.addWidget(self.browse_input_button)
@@ -89,6 +90,7 @@ class MainWindow(QMainWindow):
         self.output_path_edit.setPlaceholderText("选择保存结果的文件夹")
         self.browse_output_button = QPushButton("浏览...")
         self.browse_output_button.clicked.connect(self.browse_output)
+        self.browse_output_button.setObjectName("browse_button") # For styling
         output_layout.addWidget(self.output_label)
         output_layout.addWidget(self.output_path_edit)
         output_layout.addWidget(self.browse_output_button)
@@ -101,6 +103,7 @@ class MainWindow(QMainWindow):
         self.calibration_path_edit.setPlaceholderText("可选：包含校准 .json 文件的目录或特定文件")
         self.browse_calibration_button = QPushButton("浏览...")
         self.browse_calibration_button.clicked.connect(self.browse_calibration)
+        self.browse_calibration_button.setObjectName("browse_button") # For styling
         calibration_layout.addWidget(self.calibration_label)
         calibration_layout.addWidget(self.calibration_path_edit)
         calibration_layout.addWidget(self.browse_calibration_button)
@@ -151,6 +154,7 @@ class MainWindow(QMainWindow):
         self.hsv_config_path_edit.setPlaceholderText("可选的 .json 配置文件")
         self.browse_hsv_config_button = QPushButton("浏览...")
         self.browse_hsv_config_button.clicked.connect(self.browse_hsv_config)
+        self.browse_hsv_config_button.setObjectName("browse_button") # For styling
         self.hsv_config_layout.addWidget(self.hsv_config_path_edit)
         self.hsv_config_layout.addWidget(self.browse_hsv_config_button)
         left_params_form_layout.addRow(self.hsv_config_label, self.hsv_config_layout)
@@ -162,6 +166,7 @@ class MainWindow(QMainWindow):
         self.dl_model_path_edit.setPlaceholderText("选择 .pt 或 .onnx 模型文件")
         self.browse_dl_model_button = QPushButton("浏览...")
         self.browse_dl_model_button.clicked.connect(self.browse_dl_model)
+        self.browse_dl_model_button.setObjectName("browse_button") # For styling
         self.dl_model_layout.addWidget(self.dl_model_path_edit)
         self.dl_model_layout.addWidget(self.browse_dl_model_button)
         left_params_form_layout.addRow(self.dl_model_label, self.dl_model_layout)
@@ -208,18 +213,10 @@ class MainWindow(QMainWindow):
         self.right_params_group.setCheckable(True) # 使整个组可选
         self.right_params_group.setChecked(False) # 默认不勾选
         self.right_params_group.toggled.connect(self.toggle_lidar_params)
-        # 使用样式表调整 QGroupBox 标题栏复选框的大小
-        # 注意：具体数值可能需要根据视觉效果微调
-        self.right_params_group.setStyleSheet("""
-            QGroupBox::indicator {
-                width: 13px;
-                height: 13px;
-            }
-        """)
+        # Lidar group box indicator will inherit QCheckBox::indicator style
 
         right_params_layout = QFormLayout()
         # 可以选择性地为 QFormLayout 设置内部边距，调整标签/控件与 GroupBox 边框的距离
-        # right_params_layout.setContentsMargins(10, 10, 10, 10)
         self.right_params_group.setLayout(right_params_layout)
 
         # 将 GroupBox 添加到容器布局中
@@ -238,6 +235,7 @@ class MainWindow(QMainWindow):
         self.lidar_dir_edit.setPlaceholderText("包含 .pcd 文件的文件夹")
         self.browse_lidar_button = QPushButton("浏览...")
         self.browse_lidar_button.clicked.connect(self.browse_lidar_dir)
+        self.browse_lidar_button.setObjectName("browse_button") # For styling
         self.lidar_dir_layout.addWidget(self.lidar_dir_edit)
         self.lidar_dir_layout.addWidget(self.browse_lidar_button)
         right_params_layout.addRow(self.lidar_dir_label, self.lidar_dir_layout)
@@ -277,20 +275,23 @@ class MainWindow(QMainWindow):
         self.log_edit.setMinimumHeight(200)
         self.log_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         bottom_layout.addWidget(self.log_edit)
-        self.main_h_layout.setStretchFactor(bottom_layout, 1) # 让日志区域占据更多垂直空间
 
         control_layout = QHBoxLayout()
+        control_layout.setSpacing(10) # Add some space between buttons
+
         self.start_button = QPushButton("开始分析")
-        self.start_button.setStyleSheet("background-color: #4CAF50; color: white; padding: 10px;")
+        self.start_button.setObjectName("start_button") # Set object name for specific styling
         self.start_button.clicked.connect(self.start_analysis)
+
         self.stop_button = QPushButton("停止分析")
-        self.stop_button.setStyleSheet("background-color: #f44336; color: white; padding: 10px;")
+        self.stop_button.setObjectName("stop_button") # Set object name for specific styling
         self.stop_button.clicked.connect(self.stop_analysis)
         self.stop_button.setEnabled(False)
-        control_layout.addStretch()
-        control_layout.addWidget(self.start_button)
-        control_layout.addWidget(self.stop_button)
-        control_layout.addStretch()
+
+        # Make buttons expand to fill the space equally
+        control_layout.addWidget(self.start_button, 1) # Stretch factor 1
+        control_layout.addWidget(self.stop_button, 1)  # Stretch factor 1
+
         bottom_layout.addLayout(control_layout)
 
         # --- 右侧: 可视化窗口 ---
@@ -302,105 +303,160 @@ class MainWindow(QMainWindow):
         # 连接校准保存信号
         self.image_viewer.calibration_save_requested.connect(self.on_calibration_saved)
 
-    def setup_dark_theme(self):
-        """应用一个简单的暗色主题"""
-        palette = QPalette()
-        palette.setColor(QPalette.ColorRole.Window, QColor(53, 53, 53))
-        palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.white)
-        palette.setColor(QPalette.ColorRole.Base, QColor(42, 42, 42))
-        palette.setColor(QPalette.ColorRole.AlternateBase, QColor(66, 66, 66))
-        palette.setColor(QPalette.ColorRole.ToolTipBase, Qt.GlobalColor.black)
-        palette.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.white)
-        palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.white)
-        palette.setColor(QPalette.ColorRole.Button, QColor(53, 53, 53))
-        palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
-        palette.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
-        palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
-        palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
-        palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
+    def apply_stylesheet(self):
+        """设置应用的样式表 (深色主题)"""
+        # Fusion style is generally good with palettes
+        QApplication.setStyle(QStyleFactory.create('Fusion'))
+
+        # 应用调色板
+        dark_palette = QPalette()
+        dark_palette.setColor(QPalette.ColorRole.Window, QColor(53, 53, 53))
+        dark_palette.setColor(QPalette.ColorRole.WindowText, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.Base, QColor(42, 42, 42))
+        dark_palette.setColor(QPalette.ColorRole.AlternateBase, QColor(66, 66, 66))
+        dark_palette.setColor(QPalette.ColorRole.ToolTipBase, Qt.GlobalColor.black)
+        dark_palette.setColor(QPalette.ColorRole.ToolTipText, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.Text, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.Button, QColor(53, 53, 53))
+        dark_palette.setColor(QPalette.ColorRole.ButtonText, Qt.GlobalColor.white)
+        dark_palette.setColor(QPalette.ColorRole.BrightText, Qt.GlobalColor.red)
+        dark_palette.setColor(QPalette.ColorRole.Link, QColor(42, 130, 218))
+        dark_palette.setColor(QPalette.ColorRole.Highlight, QColor(42, 130, 218))
+        dark_palette.setColor(QPalette.ColorRole.HighlightedText, Qt.GlobalColor.black)
 
         # 设置禁用的文本颜色
-        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor(127, 127, 127))
-        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor(127, 127, 127))
-        palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, QColor(127, 127, 127))
+        dark_palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor(127, 127, 127))
+        dark_palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor(127, 127, 127))
+        dark_palette.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.WindowText, QColor(127, 127, 127))
 
-        QApplication.instance().setPalette(palette)
+        QApplication.setPalette(dark_palette)
 
-        # 样式表调整 (可选)
+        # Custom Stylesheet Additions
+        # (You can customize colors, padding, borders etc. here)
         self.setStyleSheet("""
             QWidget {
-                font-size: 10pt;
-            }
-            QPushButton {
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 5px;
-                min-width: 80px;
-            }
-            QPushButton:hover {
-                background-color: #666;
-            }
-            QPushButton:pressed {
-                background-color: #777;
-            }
-            QPushButton:disabled {
-                background-color: #444;
-                border-color: #444;
-            }
-            QLineEdit, QTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 5px;
-                background-color: #424242;
-            }
-            QComboBox::drop-down {
-                border: none;
-            }
-            QComboBox::down-arrow {
-                image: url(down_arrow.png); /* 需要一个白色下拉箭头图标 */
-                width: 12px;
-                height: 12px;
+                font-size: 10pt; /* Slightly larger default font */
             }
             QGroupBox {
-                border: 1px solid #555;
-                border-radius: 4px;
-                margin-top: 10px; /* 为标题留出空间 */
-                padding: 10px;
+                border: 1px solid #666; /* Slightly lighter border */
+                border-radius: 5px;
+                margin-top: 1ex; /* leave space at the top for the title */
+                padding: 10px 5px 5px 5px; /* top, right, bottom, left */
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
                 padding: 0 3px;
-                left: 10px; /* 调整标题位置 */
+                left: 10px; /* Align title slightly from the left edge */
             }
-            QGroupBox:checked {
-                font-weight: bold;
+            QPushButton {
+                min-height: 16px; /* Ensure buttons are not too small */
+                padding: 5px 15px; /* Increased padding */
+                border-radius: 4px; /* Slightly more rounded */
+                /* background-color gets set by palette */
+            }
+            QPushButton:checked {
+                background-color: #6a6a6a; /* Darker when checked (for view buttons) */
+                border: 1px solid #888;
+            }
+            QLineEdit, QDoubleSpinBox, QSpinBox {
+                min-height: 25px;
+                border-radius: 3px;
+                padding: 1px 5px;
+            }
+            QListWidget {
+                border-radius: 3px;
+            }
+            QSplitter::handle {
+                background-color: #444;
+            }
+            QSplitter::handle:horizontal {
+                width: 3px;
+            }
+            QSplitter::handle:vertical {
+                height: 3px;
+            }
+            /* Less prominent Start/Stop buttons */
+            QPushButton#start_button {
+                background-color: #4682B4; /* Steel Blue */
+                color: white;
+                min-height: 24px; /* Further reduced height */
+                padding: 5px 15px;
+            }
+            QPushButton#start_button:hover { background-color: #5A9BD5; }
+            QPushButton#start_button:pressed { background-color: #3E70A0; }
+            QPushButton#start_button:disabled { background-color: #5A5A5A; color: #999; }
+
+            QPushButton#stop_button {
+                background-color: #C85C5C; /* Soft Red */
+                color: white;
+                min-height: 28px; /* Further reduced height */
+                padding: 5px 15px;
+            }
+            QPushButton#stop_button:hover { background-color: #DA7F7F; }
+            QPushButton#stop_button:pressed { background-color: #B84B4B; }
+            QPushButton#stop_button:disabled { background-color: #5A5A5A; color: #999; }
+
+            /* Nicer CheckBox */
+            QCheckBox {
+                spacing: 8px; /* Space between indicator and text */
             }
             QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
+                width: 12px; /* Slightly smaller */
+                height: 12px; /* Slightly smaller */
+                border-radius: 4px;
+                border: 1px solid #888;
+                background-color: #444; /* Slightly lighter than base for visibility */
             }
-            QCheckBox::indicator:unchecked {
-                 /* TODO: Add unchecked box image */
-                 border: 1px solid #666;
-                 background-color: #424242;
+            QCheckBox::indicator:unchecked:hover {
+                border: 1px solid #aaa;
             }
             QCheckBox::indicator:checked {
-                 /* TODO: Add checked box image */
-                 background-color: #2a82da;
-                 border: 1px solid #2a82da;
+                background-color: #2a82da; /* Check color */
+                border: 1px solid #55aaff;
             }
-             QProgressBar {
+            QCheckBox::indicator:checked:hover {
+                background-color: #55aaff;
+                border: 1px solid #77ccff;
+            }
+            QGroupBox::indicator {
+                width: 12px;
+                height: 12px;
+                border-radius: 4px;
+                border: 1px solid #888;
+                background-color: #444;
+            }
+            QGroupBox::indicator:unchecked:hover {
+                border: 1px solid #aaa;
+            }
+            QGroupBox::indicator:checked {
+                background-color: #2a82da;
+                border: 1px solid #55aaff;
+            }
+            QGroupBox::indicator:checked:hover {
+                background-color: #55aaff;
+                border: 1px solid #77ccff;
+            }
+            QCheckBox:disabled {
+                color: #888;
+            }
+            QCheckBox::indicator:disabled {
                 border: 1px solid #555;
-                border-radius: 4px;
-                text-align: center;
-                background-color: #424242;
-                height: 22px;
+                background-color: #333;
             }
-            QProgressBar::chunk {
-                background-color: #4CAF50; /* 进度条颜色 */
-                border-radius: 4px;
+            QGroupBox::indicator:disabled {
+                border: 1px solid #555;
+                background-color: #333;
             }
+            /* Style for Browse buttons */
+            QPushButton#browse_button {
+                border: 1px solid #666;
+                padding: 3px 8px; /* Smaller padding */
+                min-height: 16px; /* Match other inputs */
+                background-color: #555;
+            }
+            QPushButton#browse_button:hover { background-color: #666; }
+            QPushButton#browse_button:pressed { background-color: #777; }
         """)
 
     def browse_input(self):
@@ -735,23 +791,56 @@ class MainWindow(QMainWindow):
         self.analysis_thread = None
         self.analysis_runner = None
 
-        # Re-enable UI for next run (or maybe keep disabled until explicitly cleared?)
-        # For now, re-enable
-        self.set_inputs_enabled(True)
-        self.image_viewer.setEnabled(True)
+        # After analysis, regardless of success/fail, re-enable inputs
+        self.set_inputs_enabled(True) # Make sure inputs are re-enabled
 
         if success:
             QMessageBox.information(self, "完成", message)
+            # --- Find result images and inform viewer --- #
+            config = self.get_config() # Get config again to know output dir etc.
+            if config:
+                output_dir = config['output_dir']
+                input_paths = config['input_paths']
+                save_debug = config.get('save_debug_images', False)
+
+                # Define how result images are named (must match AnalysisRunner logic)
+                # Example: If runner saves as {basename}_result.png
+                for original_path in input_paths:
+                    base_name = os.path.splitext(os.path.basename(original_path))[0]
+                    # Check for the final result image (e.g., density plot or marked image)
+                    # This depends on the specific output of AnalysisRunner
+                    potential_result_names = [
+                        f"{base_name}_density_map.png",
+                        f"{base_name}_analysis.png", # If density isn't calculated
+                        # Add other possible result names based on runner logic
+                    ]
+                    found_result_path = None
+                    for name in potential_result_names:
+                        result_path = os.path.join(output_dir, name)
+                        if os.path.exists(result_path):
+                            found_result_path = result_path
+                            break # Found the most likely result
+
+                    if found_result_path:
+                         self.image_viewer.set_result_image_path(original_path, found_result_path)
+                    else:
+                         self.image_viewer.set_result_image_path(original_path, None)
+                         logging.warning(f"未能在输出目录找到 {base_name} 的预期结果图像。")
+            else:
+                logging.error("无法在分析完成后重新获取配置以查找结果图像。")
         else:
             QMessageBox.critical(self, "错误", message)
+
+        # Ensure viewer widget itself is enabled
+        self.image_viewer.setEnabled(True)
 
     def set_inputs_enabled(self, enabled):
         """启用或禁用所有输入控件"""
         # 输入输出
         self.input_path_edit.setEnabled(enabled)
         self.browse_input_button.setEnabled(enabled)
-        self.output_path_edit.setEnabled(enabled)
-        self.browse_output_button.setEnabled(enabled)
+        self.output_path_edit.setEnabled(True)
+        self.browse_output_button.setEnabled(True)
         # 参数
         self.model_type_combo.setEnabled(enabled)
         self.segment_method_combo.setEnabled(enabled)
