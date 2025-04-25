@@ -52,7 +52,7 @@ class AnalysisRunner(QObject):
             do_calibration = self.config.get('do_calibration', False)
             save_debug_images = self.config.get('save_debug_images', False)
             calculate_density = self.config.get('calculate_density', True)
-            plot_layout_str = self.config.get('plot_layout_str', 'default') # Get layout string from UI config
+            plot_layout_str = self.config.get('plot_layout', 'default') # Changed key from 'plot_layout_str'
             perform_lidar_analysis = self.config.get('perform_lidar_analysis', False)
             lidar_dir = self.config.get('lidar_dir', None)
             dbscan_eps = self.config.get('dbscan_eps', 0.3) # Use the correct UI value

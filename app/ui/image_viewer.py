@@ -223,6 +223,11 @@ class ImageViewerWidget(QWidget):
             # --- FIX: Update button enabling logic --- #
             result_dict = self.result_image_map.get(image_path, {})
             has_image_paths = any(isinstance(v, str) for k, v in result_dict.items() if k != 'calibration_points')
+            # --- Add Logging --- #
+            print(f"[Viewer display_image DEBUG] Button Check for: {os.path.basename(image_path)}")
+            print(f"[Viewer display_image DEBUG]  - Result Dict Keys: {list(result_dict.keys())}")
+            print(f"[Viewer display_image DEBUG]  - Has Image Paths: {has_image_paths}")
+            # --- End Logging ---
             self.view_result_button.setEnabled(has_image_paths)
             # --- END FIX --- #
         else:
@@ -255,10 +260,17 @@ class ImageViewerWidget(QWidget):
             self.current_pixmap_item = None # Ensure it's None on error
             return False
 
-        # 创建或更新场景
-        self.current_scene = QGraphicsScene() # 总是创建新场景
-        self.graphics_view.setScene(self.current_scene)
-        print(f"[Viewer _load_and_display] Set new scene for {os.path.basename(image_path)}")
+        # --- 修改：复用或创建场景 --- #
+        scene = self.graphics_view.scene()
+        if scene:
+             scene.clear()
+             print(f"[Viewer _load_and_display] Cleared existing scene for {os.path.basename(image_path)}")
+             self.current_scene = scene # Keep reference
+        else:
+             self.current_scene = QGraphicsScene()
+             self.graphics_view.setScene(self.current_scene)
+             print(f"[Viewer _load_and_display] Created new scene for {os.path.basename(image_path)}")
+        # --- 结束修改 ---
 
         # Add pixmap to the scene
         if full_pixmap:
@@ -367,12 +379,10 @@ class ImageViewerWidget(QWidget):
     def _on_preview_selected(self, current_item, previous_item):
         """处理预览列表中的选择更改"""
         if not current_item:
-            # No item selected, clear the main view?
-            # Or maybe do nothing, keep the last view?
-            # Let's clear for now, might need adjustment based on UX preference.
-            self.graphics_view.setScene(None)
-            self.current_pixmap_item = None
-            print("[Viewer _on_preview_selected] No item selected, view cleared.")
+            # No item selected, clear the main view? (Let's avoid clearing for now)
+            # self.graphics_view.setScene(None)
+            # self.current_pixmap_item = None
+            print("[Viewer _on_preview_selected] No item selected. View remains unchanged.")
             return
 
         selected_data = current_item.data(Qt.ItemDataRole.UserRole)
@@ -380,19 +390,25 @@ class ImageViewerWidget(QWidget):
         if self.current_view_mode == 'original' or self.current_view_mode == 'calibration':
             if isinstance(selected_data, str):
                 original_path = selected_data
+                # --- FIX: Only display if path is different OR pixmap is missing --- #
                 if original_path != self.current_image_path or not self.current_pixmap_item:
-                    print(f"[Viewer _on_preview_selected] Original mode: Selected {os.path.basename(original_path)}")
+                    print(f"[Viewer _on_preview_selected] Original/Calib mode: Selection changed or pixmap missing. Displaying {os.path.basename(original_path)}")
                     self.display_image(original_path) # Handles setting self.current_image_path and loading
-                # If already displayed, do nothing
+                else:
+                    print(f"[Viewer _on_preview_selected] Original/Calib mode: Selected image ({os.path.basename(original_path)}) is already displayed. Doing nothing.")
+                # --- END FIX --- #
             else:
                  print(f"[Viewer _on_preview_selected] Error: Expected string path in original/calibration mode, got {type(selected_data)}")
 
         elif self.current_view_mode == 'result':
             if isinstance(selected_data, tuple) and len(selected_data) == 2:
                 result_type, result_path = selected_data
-                print(f"[Viewer _on_preview_selected] Result mode: Selected {result_type} ({os.path.basename(result_path)})")
-                # Directly load and display the result image without changing mode state
+                # --- FIX: Only display if result path is different OR pixmap is missing --- #
+                # Check if the result image is already displayed (tricky without storing current result path explicitly)
+                # Let's always reload the result image for simplicity for now, but avoid changing mode state.
+                print(f"[Viewer _on_preview_selected] Result mode: Selected {result_type}. Displaying {os.path.basename(result_path)}")
                 self._load_and_display_base_image(result_path)
+                # --- END FIX --- #
             else:
                  print(f"[Viewer _on_preview_selected] Error: Expected tuple (type, path) in result mode, got {type(selected_data)}")
 
@@ -420,7 +436,7 @@ class ImageViewerWidget(QWidget):
                  self.view_calibration_button.setEnabled(False)
                  self.view_result_button.setEnabled(False)
             else:
-                # Prevent switching to calibration/result if no image context
+                 # Prevent switching to calibration/result if no image context
                  print(f"[Viewer _set_view_mode] Prevented switching to mode {mode_id} because no image context exists.")
                  # Re-check the button corresponding to the actual current mode
                  if self.current_view_mode == 'original': self.view_original_button.setChecked(True)
@@ -431,57 +447,54 @@ class ImageViewerWidget(QWidget):
         # --- Handle Mode Switching --- #
         if mode_id == 0: # Original
             print("[Viewer _set_view_mode] Switching to Original mode.")
-            # If target_image_path is provided, make it the current one
-            if target_image_path and target_image_path != self.current_image_path:
-                 print(f"[Viewer _set_view_mode] Target image provided for Original: {os.path.basename(target_image_path)}")
-                 # display_image will set self.current_image_path and load
-                 self.display_image(target_image_path)
-            elif not self.current_image_path:
-                 print("[Viewer _set_view_mode] No current image path for Original mode. Clearing view.")
-                 # Clear view and lists if entering empty original state
-                 self.preview_list.clear()
-                 self.graphics_view.setScene(None)
-                 self.current_pixmap_item = None
-            # --- Bug Fix 2: Ensure display_image is called when switching back from other modes ---
-            elif self.current_view_mode != 'original' or not self.current_pixmap_item:
-                 # Switching back to original from another mode, or loading initial image,
-                 # or current pixmap is somehow missing
-                 print("[Viewer _set_view_mode] Reloading display for Original mode.")
-                 self.display_image(self.current_image_path) # display_image handles loading/display
-            # --- End Bug Fix 2 ---
-            elif self.current_view_mode == 'original' and self.current_pixmap_item:
-                 print("[Viewer _set_view_mode] Already in original mode, no change needed.")
-                 # No need to reload if already in original view with a valid pixmap
-                 # return # Removed return to ensure populate/selection runs
 
-            # Common setup for original mode (after potential image load)
+            # --- FIX 1 & 2: Final attempt at stable switching --- #
+            # 1. Set mode state and UI elements first
             self.current_view_mode = 'original'
             self.is_calibration_mode = False
             self.calibration_controls_widget.setVisible(False)
             self.graphics_view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
             self.graphics_view.viewport().setCursor(Qt.CursorShape.ArrowCursor)
-            self._populate_preview_list('original') # Repopulate list
+            self.view_original_button.setChecked(True)
 
-            # --- Bug Fix 2: Ensure correct item is selected after repopulating ---
+            # 2. Ensure the target image data is loaded if path is valid
+            image_loaded_successfully = False
+            if effective_image_path:
+                 # Call display_image. It now only reloads if necessary.
+                 print(f"[Viewer _set_view_mode] Calling display_image for Original: {os.path.basename(effective_image_path)}")
+                 self.display_image(effective_image_path)
+                 # Check if display_image succeeded in setting the pixmap item
+                 image_loaded_successfully = (self.current_image_path == effective_image_path and self.current_pixmap_item is not None)
+            else:
+                 print("[Viewer _set_view_mode] No effective image path for Original mode. Clearing graphics view.")
+                 self.current_image_path = None
+                 self.current_pixmap_item = None
+                 self.graphics_view.setScene(None) # Explicitly clear scene
+
+            # 3. Populate the preview list AFTER display attempt
+            self._populate_preview_list('original')
+
+            # 4. Select the correct item in the list (without blocking signals initially)
+            selected_row = -1
             if self.current_image_path:
-                item_found = False
                 for i in range(self.preview_list.count()):
                     item = self.preview_list.item(i)
                     if item and item.data(Qt.ItemDataRole.UserRole) == self.current_image_path:
-                        if self.preview_list.currentRow() != i:
-                            print(f"[Viewer _set_view_mode] Selecting current item row {i} in original list.")
-                            self.preview_list.blockSignals(True)
-                            self.preview_list.setCurrentRow(i)
-                            self.preview_list.blockSignals(False)
-                        else:
-                             print(f"[Viewer _set_view_mode] Current item row {i} already selected.")
-                        item_found = True
+                        print(f"[Viewer _set_view_mode] Found item for {os.path.basename(self.current_image_path)} at row {i}. Setting current row.")
+                        self.preview_list.setCurrentRow(i) # Let signals fire
+                        selected_row = i
                         break
-                if not item_found:
-                     print("[Viewer _set_view_mode] Warning: Could not find list item for current image path after populating.")
-            # --- End Bug Fix 2 ---
+                if selected_row == -1:
+                    print("[Viewer _set_view_mode] Warning: Could not find list item for current image path after populating.")
+            else:
+                 self.preview_list.setCurrentRow(-1) # Ensure no selection if no image
 
-            self.view_original_button.setChecked(True)
+            # 5. Final check: If image loading failed or path was invalid, show placeholder
+            if not image_loaded_successfully and effective_image_path:
+                self._show_placeholder_scene(f"无法加载原始图像:\n{os.path.basename(effective_image_path)}")
+            elif not effective_image_path:
+                self._show_placeholder_scene("无图像加载")
+            # --- End FIX 1 & 2 ---
 
         elif mode_id == 1: # Calibration
             print("[Viewer _set_view_mode] Switching to Calibration mode.")
