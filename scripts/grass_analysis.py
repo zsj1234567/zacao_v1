@@ -814,24 +814,141 @@ class GrassAnalyzer:
         # 如果没有提供保存路径，使用默认路径
         if save_path is None:
             save_path = 'results/analysis_result.png'
-            os.makedirs('results', exist_ok=True)
+            os.makedirs(os.path.dirname(save_path), exist_ok=True) # 确保目录存在
 
-        # 保存结果
+        # 初始化返回的路径字典
+        saved_paths = {}
+
+        # 保存合并后的图形
         try:
-            # 保存合并后的图形
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            plt.close(fig)  # 关闭图形，释放内存
-            print(f"[Visualize] 结果图像已成功保存到: {save_path}") # 添加成功日志
-            return save_path
+            saved_paths['analysis_image'] = save_path # 主分析图
+            print(f"[Visualize] 结果图像已成功保存到: {save_path}")
         except Exception as e:
             print(f"[Visualize] 保存合并结果图像时出错: {e}")
-            plt.close(fig) # 确保即使出错也关闭图形
-            return None
+            save_path = None # 标记保存失败
+        finally:
+            plt.close(fig) # 确保关闭图形
+
+        # 保存调试图像 (如果 save_debug=True)
+        if save_debug:
+            output_dir = os.path.dirname(save_path)
+            base_filename = os.path.splitext(os.path.basename(save_path))[0]
+            # 移除可能存在的后缀如 _analysis, _default, _simple
+            base_filename = base_filename.replace('_analysis', '').replace('_default', '').replace('_simple', '')
+
+            debug_images_to_save = {
+                'original': self.original_image,
+                'calibrated': self.calibrated_image,
+                'hsv_mask': self.hsv_mask,
+                'coverage_overlay': coverage_vis if 'coverage_vis' in locals() else None, # 仅当存在时保存
+            }
+            if calculate_density:
+                 debug_images_to_save.update({
+                     'instance_mask': self.instances if self.instances is not None else None,
+                     'instance_overlay': self.debug_images.get('instances'),
+                     'density_overlay': density_vis if 'density_vis' in locals() else None, # 仅当存在时保存
+                 })
+
+            for key, img_data in debug_images_to_save.items():
+                if img_data is not None:
+                    img_to_write = None # Prepare variable for the final image to write
+                    # 确保图像是 BGR 或 Grayscale uint8
+                    if len(img_data.shape) == 3 and img_data.shape[2] == 3:
+                        # --- FIX: Convert RGB to BGR for ALL 3-channel images --- #
+                        if np.issubdtype(img_data.dtype, np.floating):
+                             img_data = (img_data * 255).astype(np.uint8)
+                        # Assume input is RGB unless known otherwise (e.g., from cv2 functions)
+                        # Convert to BGR for imwrite
+                        img_to_write = cv2.cvtColor(img_data, cv2.COLOR_RGB2BGR)
+                        # --- END FIX --- #
+                    elif len(img_data.shape) == 2: # Grayscale or mask
+                         if np.issubdtype(img_data.dtype, np.integer) and img_data.max() > 1: # e.g. instance mask
+                             # 尝试转换为可显示的灰度图
+                             img_to_write = cv2.normalize(img_data, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+                         elif np.issubdtype(img_data.dtype, np.bool_) or img_data.max() <= 1: # binary mask (allow max 1)
+                            img_to_write = (img_data * 255).astype(np.uint8)
+                         else:
+                            # Handle other integer types if necessary (e.g., already uint8 grayscale)
+                            if img_data.dtype == np.uint8:
+                                 img_to_write = img_data
+                            else:
+                                 print(f"[Visualize] Warning: Unhandled 2-channel image type for key '{key}': dtype={img_data.dtype}")
+                                 continue # Skip saving this debug image
+                    else:
+                        print(f"[Visualize] Warning: Unhandled image shape for key '{key}': shape={img_data.shape}")
+                        continue # Skip saving
+
+                    # Check if image conversion was successful
+                    if img_to_write is None:
+                         print(f"[Visualize] Warning: Image data for key '{key}' could not be prepared for saving.")
+                         continue
+
+                    debug_save_path = os.path.join(output_dir, f"{base_filename}_{key}_debug.png")
+                    normalized_debug_save_path = os.path.normpath(debug_save_path)
+
+                    # --- 修改：使用 imencode 和 open 处理 Unicode 路径 --- #
+                    try:
+                        # 1. 将图像编码为 PNG 格式的字节流
+                        encode_param = [int(cv2.IMWRITE_PNG_COMPRESSION), 3] # 0-9, 3 is default
+                        result, buffer = cv2.imencode('.png', img_to_write, encode_param)
+
+                        if not result:
+                            print(f"[Visualize] Error: cv2.imencode 调试图像 [{key}] 失败。")
+                            continue
+
+                        # 2. 使用 Python 的 open 以二进制模式写入文件
+                        with open(normalized_debug_save_path, 'wb') as f:
+                            f.write(buffer)
+
+                        # 写入成功
+                        saved_paths[f'{key}_debug_image'] = normalized_debug_save_path
+                        # print(f"[Visualize] 调试图像 [{key}] 已保存到: {normalized_debug_save_path}") # 日志可以保持简洁
+
+                    except Exception as e:
+                        print(f"[Visualize] 使用 imencode/open 保存调试图像 [{key}] 到 '{normalized_debug_save_path}' 时发生异常: {e}")
+                    # --- 结束修改 --- #
+
+        # 返回包含所有已保存路径的字典
+        return saved_paths
 
     def _save_debug_image(self, key, image_data, output_dir, base_filename):
-        """Helper function to save individual debug images."""
+        """Helper function to save individual debug images. (此函数不再直接使用，逻辑合并到visualize_results)"""
         if image_data is None:
-            return
+            return None # 返回 None 而不是直接退出
+
+        # 确保输出目录存在
+        os.makedirs(output_dir, exist_ok=True)
+
+        # 构建保存路径
+        save_path = os.path.join(output_dir, f"{base_filename}_{key}_debug.png")
+
+        try:
+            # 检查图像数据类型和格式
+            if isinstance(image_data, np.ndarray):
+                 # 确保图像是 BGR 或 Grayscale uint8
+                if len(image_data.shape) == 3 and image_data.shape[2] == 3:
+                    # 如果是浮点数，先转换
+                    if np.issubdtype(image_data.dtype, np.floating):
+                         image_data = (image_data * 255).astype(np.uint8)
+                    # OpenCV 需要 BGR
+                    # image_data = cv2.cvtColor(image_data, cv2.COLOR_RGB2BGR) # 不一定需要，取决于来源
+                elif len(image_data.shape) == 2: # Grayscale or mask
+                     if np.issubdtype(image_data.dtype, np.bool_): # binary mask
+                         image_data = (image_data * 255).astype(np.uint8)
+                     elif np.issubdtype(image_data.dtype, np.floating):
+                          image_data = (image_data * 255).astype(np.uint8)
+
+
+                cv2.imwrite(save_path, image_data)
+                print(f"[Debug Save] 调试图像 [{key}] 已保存到: {save_path}")
+                return save_path
+            else:
+                print(f"[Debug Save] 调试图像 [{key}] 数据格式不正确，跳过保存。")
+                return None
+        except Exception as e:
+            print(f"[Debug Save] 保存调试图像 [{key}] 时出错: {e}")
+            return None
 
 def main():
     # 创建草地分析器实例

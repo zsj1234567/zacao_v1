@@ -199,18 +199,11 @@ class MainWindow(QMainWindow):
         self.calculate_density_checkbox = QCheckBox("计算覆盖密度")
         left_params_form_layout.addRow(self.calculate_density_checkbox)
 
-        plot_layout_label = QLabel("绘图布局 (行, 列):")
-        self.plot_layout_rows_spin = QSpinBox()
-        self.plot_layout_rows_spin.setRange(1, 10)
-        self.plot_layout_rows_spin.setValue(2)
-        self.plot_layout_cols_spin = QSpinBox()
-        self.plot_layout_cols_spin.setRange(1, 10)
-        self.plot_layout_cols_spin.setValue(2)
-        plot_layout_hbox = QHBoxLayout()
-        plot_layout_hbox.addWidget(self.plot_layout_rows_spin)
-        plot_layout_hbox.addWidget(QLabel("x"))
-        plot_layout_hbox.addWidget(self.plot_layout_cols_spin)
-        left_params_form_layout.addRow(plot_layout_label, plot_layout_hbox)
+        self.layout_label = QLabel("分析图布局:")
+        self.layout_combo = QComboBox()
+        self.layout_combo.addItems(["default (3x2)", "simple (1x3)"])
+        self.layout_combo.setCurrentIndex(0) # Default to 'default'
+        left_params_form_layout.addRow(self.layout_label, self.layout_combo)
 
         # 右侧参数组 (Lidar)
         # 使用一个容器布局来更好地控制 GroupBox 的位置和边距
@@ -250,17 +243,18 @@ class MainWindow(QMainWindow):
         self.lidar_dir_layout.addWidget(self.browse_lidar_button)
         right_params_layout.addRow(self.lidar_dir_label, self.lidar_dir_layout)
 
-        self.dbscan_eps_label = QLabel("DBSCAN ε (邻域半径):")
+        self.dbscan_eps_label = QLabel("DBSCAN邻域半径(eps):")
         self.dbscan_eps_spinbox = QDoubleSpinBox()
         self.dbscan_eps_spinbox.setRange(0.01, 10.0)
-        self.dbscan_eps_spinbox.setSingleStep(0.01)
-        self.dbscan_eps_spinbox.setValue(0.1)
+        self.dbscan_eps_spinbox.setSingleStep(0.05)
+        self.dbscan_eps_spinbox.setValue(0.3) # Default from main.py
+        self.dbscan_eps_spinbox.setDecimals(3) # More precision if needed
         right_params_layout.addRow(self.dbscan_eps_label, self.dbscan_eps_spinbox)
 
-        self.dbscan_min_samples_label = QLabel("DBSCAN MinPts (最小点数):")
+        self.dbscan_min_samples_label = QLabel("DBSCAN最小样本数(min_samples):")
         self.dbscan_min_samples_spinbox = QSpinBox()
         self.dbscan_min_samples_spinbox.setRange(1, 100)
-        self.dbscan_min_samples_spinbox.setValue(5)
+        self.dbscan_min_samples_spinbox.setValue(2) # Default from main.py
         right_params_layout.addRow(self.dbscan_min_samples_label, self.dbscan_min_samples_spinbox)
 
         # 初始时禁用 Lidar 参数
@@ -306,39 +300,35 @@ class MainWindow(QMainWindow):
 
         # --- 右侧: 可视化窗口 ---
         self.image_viewer = ImageViewerWidget()
+        # Connect signals BEFORE adding to layout potentially
+        self.image_viewer.calibration_save_requested.connect(self.on_calibration_saved)
 
-        # --- Viewer Splitter (contains preview list and main viewer panel) --- #
-        self.viewer_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.viewer_splitter.addWidget(self.image_viewer.get_preview_list_widget())
-        self.viewer_splitter.addWidget(self.image_viewer.get_viewer_panel_widget())
-
-        # Add the viewer splitter to the main splitter
-        self.main_splitter.addWidget(self.viewer_splitter)
+        # --- 直接将 ImageViewer 添加到主 Splitter --- #
+        self.main_splitter.addWidget(self.image_viewer) # Add the entire viewer widget
 
         # --- Set Initial Splitter Sizes --- #
-        # Adjust these ratios as needed
-        total_width = self.width() # Or a default estimate like 1200
-        config_width = int(total_width * 0.25) # Config panel takes ~25%
+        # Adjust main splitter sizes
+        total_width = self.sizeHint().width() # Use sizeHint for initial estimate
+        config_width = int(total_width * 0.30) # Config panel takes ~30%
         viewer_width = total_width - config_width
-        preview_width = self.image_viewer.get_preview_list_widget().width() # Use its fixed width
-        graphics_view_width = viewer_width - preview_width
 
         self.main_splitter.setSizes([config_width, viewer_width])
-        self.viewer_splitter.setSizes([preview_width, graphics_view_width])
 
-        # Optional: Set stretch factors (less precise than setSizes for initial state)
-        # self.main_splitter.setStretchFactor(0, 1) # Config panel
-        # self.main_splitter.setStretchFactor(1, 3) # Viewer area
-        # self.viewer_splitter.setStretchFactor(0, 1) # Preview list
-        # self.viewer_splitter.setStretchFactor(1, 4) # Main view
+        # Viewer internal splitter sizes are handled within ImageViewerWidget if it uses one,
+        # or its internal layout stretch factors.
+        # self.viewer_splitter.setSizes([preview_width, graphics_view_width]) # Removed
+
+        # Optional: Set stretch factors for the main splitter
+        self.main_splitter.setStretchFactor(0, 0) # Config panel doesn't stretch as much
+        self.main_splitter.setStretchFactor(1, 1) # Viewer panel takes remaining space
 
         # Hide config panel if size becomes very small (optional)
         # self.main_splitter.splitterMoved.connect(self.handle_splitter_move)
 
-        # 连接日志信号
-        self.log_signal.connect(self.append_log)
-        # 连接校准保存信号
-        self.image_viewer.calibration_save_requested.connect(self.on_calibration_saved)
+        # 连接日志信号 (已移到更早的位置)
+        # self.log_signal.connect(self.append_log)
+        # 连接校准保存信号 (已移到更早的位置)
+        # self.image_viewer.calibration_save_requested.connect(self.on_calibration_saved)
 
     def apply_stylesheet(self):
         """设置应用的样式表 (深色主题)"""
@@ -580,10 +570,7 @@ class MainWindow(QMainWindow):
                                             "图片文件 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff);;所有文件 (*.*)")
         if files:
             # Handle single or multiple file selection
-            if len(files) == 1:
-                self._handle_input_path_selection(files[0])
-            else:
-                 self._handle_input_path_selection(files)
+            self._handle_input_path_selection(files)
 
     def browse_output(self):
         path = QFileDialog.getExistingDirectory(self, "选择输出文件夹", "", QFileDialog.Option.ShowDirsOnly)
@@ -655,99 +642,67 @@ class MainWindow(QMainWindow):
             return False
 
     def get_config(self) -> Optional[dict]:
-        """收集 UI 配置并进行基本验证"""
-        config = {}
+        """收集所有配置参数."""
         input_path = self.input_path_edit.text().strip()
         output_dir = self.output_path_edit.text().strip()
-        calibration_path = self.calibration_path_edit.text().strip() # 获取校准路径
 
-        if not input_path:
-            QMessageBox.warning(self, "输入错误", "请选择输入图片或文件夹。")
-            return None
-        if not output_dir:
-            QMessageBox.warning(self, "输入错误", "请选择输出文件夹。")
+        if not input_path or not output_dir:
+            QMessageBox.warning(self, "缺少输入", "请输入有效的输入图片/文件夹和输出文件夹路径。")
             return None
 
-        # 处理输入路径 (单个文件、多个文件用分号分隔、文件夹)
-        input_paths = []
-        if os.path.isdir(input_path):
-            supported_exts = ('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff')
-            try:
-                for fname in os.listdir(input_path):
-                    if fname.lower().endswith(supported_exts):
-                        input_paths.append(os.path.join(input_path, fname))
-                if not input_paths:
-                    QMessageBox.warning(self, "输入错误", f"文件夹 '{input_path}' 中未找到支持的图片文件。")
-                    return None
-            except OSError as e:
-                QMessageBox.critical(self, "文件错误", f"无法读取文件夹 '{input_path}': {e}")
-                return None
-        elif os.path.isfile(input_path):
-             input_paths = [input_path]
-        elif ';' in input_path: # 多个文件
-             input_paths = [p.strip() for p in input_path.split(';') if p.strip() and os.path.isfile(p.strip())]
-             if not input_paths:
-                 QMessageBox.warning(self, "输入错误", "提供的多个文件路径无效或文件不存在。")
-                 return None
-        else:
-             QMessageBox.warning(self, "输入错误", f"输入路径 '{input_path}' 不是有效的文件或文件夹。")
+        # 检查输入路径是否存在
+        if not os.path.exists(input_path):
+             QMessageBox.warning(self, "路径无效", f"输入路径不存在: {input_path}")
              return None
 
-        # Normalize all collected paths
+        # 尝试创建输出目录
         try:
-            normalized_input_paths = [os.path.normpath(p) for p in input_paths]
-        except Exception as e:
-            QMessageBox.critical(self, "路径错误", f"规范化输入路径时出错: {e}")
+            os.makedirs(output_dir, exist_ok=True)
+        except OSError as e:
+            QMessageBox.critical(self, "创建目录失败", f"无法创建输出目录: {output_dir}\n错误: {e}")
             return None
 
-        config['input_paths'] = normalized_input_paths
-        config['output_dir'] = output_dir
-        config['calibration_path'] = calibration_path if calibration_path else None # 添加到配置
+        # 获取模型类型
+        model_type_text = self.model_type_combo.currentText()
+        model_type = 'dl' if '深度学习' in model_type_text else 'traditional'
 
-        # 分析模型和方法
-        is_dl_model = self.model_type_combo.currentText() == "深度学习"
-        config['model_type'] = 'dl' if is_dl_model else 'traditional'
+        # 获取绘图布局
+        layout_text = self.layout_combo.currentText() # 使用新的下拉框
+        plot_layout = 'simple' if 'simple' in layout_text else 'default'
 
-        if is_dl_model:
-            config['dl_model_path'] = self.dl_model_path_edit.text().strip()
-            config['dl_device'] = self.dl_device_combo.currentText().split(" ")[0] # 取 'cpu' 或 'cuda'
-            if not config['dl_model_path'] or not os.path.isfile(config['dl_model_path']):
-                QMessageBox.warning(self, "配置错误", "请选择有效的深度学习模型文件。")
-                return None
-        else:
-            # 获取选中的分割方法枚举成员
-            config['segment_method'] = self.segment_method_combo.currentText().lower()
+        config = {
+            "input_path": input_path,
+            "output_dir": output_dir,
+            "calibration_path": self.calibration_path_edit.text().strip() or None,
+            "model_type": model_type,
+            "do_calibration": self.do_calibration_checkbox.isChecked(),
+            "save_debug_images": self.save_debug_checkbox.isChecked(),
+            "calculate_density": self.calculate_density_checkbox.isChecked(),
+            "plot_layout": plot_layout, # 添加新的布局字符串
+            "perform_lidar_analysis": self.right_params_group.isChecked(),
+            # Lidar specific parameters (only relevant if perform_lidar_analysis is True)
+            "lidar_dir": self.lidar_dir_edit.text().strip() or None,
+            "dbscan_eps": self.dbscan_eps_spinbox.value(), # 添加DBSCAN eps
+            "dbscan_min_samples": self.dbscan_min_samples_spinbox.value(), # 添加DBSCAN min_samples
+        }
 
-            hsv_config = self.hsv_config_path_edit.text().strip()
-            if hsv_config and not os.path.isfile(hsv_config):
-                QMessageBox.warning(self, "配置错误", f"HSV 配置文件 '{hsv_config}' 不存在。")
-                return None
-            config['hsv_config_path'] = hsv_config if hsv_config else None
+        # 添加模型特定参数
+        if model_type == 'traditional':
+            config["segment_method"] = self.segment_method_combo.currentText().lower()
+            config["hsv_config_path"] = self.hsv_config_path_edit.text().strip() or None
+        else: # dl model
+            config["dl_model_path"] = self.dl_model_path_edit.text().strip() or None
+            config["dl_device"] = self.dl_device_combo.currentText().split(" ")[0] # Get 'cpu' or 'cuda'
 
-        # 通用参数
-        config['do_calibration'] = self.do_calibration_checkbox.isChecked()
-        config['save_debug_images'] = self.save_debug_checkbox.isChecked()
-        config['calculate_density'] = self.calculate_density_checkbox.isChecked()
-        config['plot_layout'] = (
-            self.plot_layout_rows_spin.value(),
-            self.plot_layout_cols_spin.value()
-        )
+        # 验证 Lidar 目录（如果启用）
+        if config["perform_lidar_analysis"] and not config["lidar_dir"]:
+             QMessageBox.warning(self, "缺少 Lidar 目录", "请在启用 Lidar 分析时提供 Lidar 数据文件夹路径。")
+             return None
+        if config["perform_lidar_analysis"] and not os.path.isdir(config["lidar_dir"]):
+             QMessageBox.warning(self, "无效 Lidar 目录", f"Lidar 数据文件夹不存在或不是有效目录: {config['lidar_dir']}")
+             return None
 
-        # Lidar 参数
-        config['perform_lidar_analysis'] = self.right_params_group.isChecked()
-        if config['perform_lidar_analysis']:
-            lidar_dir = self.lidar_dir_edit.text().strip()
-            if not lidar_dir or not os.path.isdir(lidar_dir):
-                QMessageBox.warning(self, "配置错误", "请选择有效的 Lidar 数据文件夹。")
-                return None
-            config['lidar_dir'] = lidar_dir
-            config['dbscan_eps'] = self.dbscan_eps_spinbox.value()
-            config['dbscan_min_samples'] = self.dbscan_min_samples_spinbox.value()
-        else:
-             config['lidar_dir'] = None
-             config['dbscan_eps'] = 0.1 # Default even if disabled
-             config['dbscan_min_samples'] = 5 # Default even if disabled
-
+        logging.info(f"获取到的配置: {config}")
         return config
 
     def start_analysis(self):
@@ -761,9 +716,8 @@ class MainWindow(QMainWindow):
         self.log_edit.clear() # Clear previous logs
         self.progress_bar.setValue(0)
 
-        # -- Populate Image Viewer --
-        # Do this early so user sees images even if calibration is needed
-        self.image_viewer.load_images(config['input_paths'])
+        # --- 移除：不再在这里提前加载图像 ---
+        # self.image_viewer.load_images(config['input_path'])
 
         if self.analysis_thread and self.analysis_thread.isRunning():
             QMessageBox.warning(self, "正在运行", "分析任务已在运行中。")
@@ -771,11 +725,53 @@ class MainWindow(QMainWindow):
 
         logging.info("获取配置。")
 
-        # --- Calibration Handling --- 
+        # --- Calibration Handling ---
         do_calib = config.get('do_calibration', False)
         calib_path_input = config.get('calibration_path')
-        input_image_paths = config['input_paths']
 
+        # --- FIX: Ensure input_image_paths is always a list --- #
+        potential_paths = config['input_path']
+        actual_image_paths_list = []
+        if isinstance(potential_paths, str):
+             # If it's a single file path string from the input box
+             if os.path.isfile(potential_paths):
+                  actual_image_paths_list = [potential_paths]
+             elif os.path.isdir(potential_paths):
+                  # If it's a directory path string, get image files from it
+                  supported_exts = ('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff')
+                  try:
+                      all_files = os.listdir(potential_paths)
+                      actual_image_paths_list = [os.path.join(potential_paths, fname) for fname in all_files if fname.lower().endswith(supported_exts)]
+                  except OSError as e:
+                      QMessageBox.critical(self, "文件错误", f"无法读取输入文件夹 '{potential_paths}' 进行校准检查: {e}")
+                      # Keep actual_image_paths_list empty
+             else:
+                  # Invalid path in input box
+                  QMessageBox.warning(self, "路径无效", f"输入框中的路径无效: {potential_paths}")
+                  # Keep actual_image_paths_list empty
+        elif isinstance(potential_paths, list):
+             # If it's already a list (likely from multi-file selection via browse)
+             actual_image_paths_list = potential_paths
+        else:
+             logging.error(f"配置中的 input_path 类型未知: {type(potential_paths)}。无法检查校准。")
+             # Keep actual_image_paths_list empty
+
+        # --- Update config: Replace 'input_path' with 'input_paths' (list) --- #
+        if not actual_image_paths_list:
+             QMessageBox.warning(self, "无有效图像", "未找到有效的输入图像文件。")
+             self.set_inputs_enabled(True) # Re-enable inputs if no images
+             return
+
+        config['input_paths'] = actual_image_paths_list # Add the list with the correct key
+        if 'input_path' in config: # Ensure the key exists before deleting
+            del config['input_path'] # Remove the old singular key
+        # --- End Update --- #
+
+        # --- FIX 2: Store config BEFORE calibration check --- #
+        self.last_run_config = config.copy()
+        # --- END FIX 2 ---
+
+        # --- Calibration Handling (now uses config['input_paths']) ---
         if do_calib:
             logging.info("检查校准文件...")
             # Determine the directory to search/save calibrations
@@ -797,7 +793,7 @@ class MainWindow(QMainWindow):
             self.effective_calibration_dir = calib_dir_to_use # Store for saving later
             self.image_viewer.set_calibration_save_dir(self.effective_calibration_dir)
 
-            for img_path in input_image_paths:
+            for img_path in actual_image_paths_list:
                  img_basename = os.path.splitext(os.path.basename(img_path))[0]
                  expected_json_path = os.path.join(self.effective_calibration_dir, f"{img_basename}.json")
 
@@ -823,12 +819,17 @@ class MainWindow(QMainWindow):
                 logging.info(f"需要手动校准 {len(self.pending_calibrations)} 张图像。")
                 self.start_button.setEnabled(False) # Keep start disabled
                 self.set_inputs_enabled(False) # Keep inputs disabled
+
+                # --- 修改：在进入校准模式前加载图像列表 --- #
+                self.image_viewer.load_images(actual_image_paths_list)
+                # --- 结束修改 ---
+
                 QMessageBox.information(self, "需要校准",
                                         f"请在右侧窗口为 {len(self.pending_calibrations)} 张图像选择1平方米区域的4个角点。\n" +
                                         '完成后点击"保存校准"按钮。')
                 # Start calibration for the first image
                 first_image_to_calibrate = self.pending_calibrations[0]
-                self.image_viewer.set_calibration_mode(first_image_to_calibrate)
+                self.image_viewer._set_view_mode(1, target_image_path=first_image_to_calibrate)
                 return # Stop here, wait for on_calibration_saved signal
             else:
                  logging.info("所有图像均找到有效校准文件或不需要校准。")
@@ -837,7 +838,12 @@ class MainWindow(QMainWindow):
              logging.info("跳过校准步骤。")
 
         # --- If we reach here, either calibration is done/skipped --- 
-        self._proceed_with_analysis(config)
+        # --- 修改：在这里加载图像（如果未进行校准）---
+        if not do_calib:
+             self.image_viewer.load_images(actual_image_paths_list)
+        # --- 结束修改 ---
+        # --- FIX 2: Pass the potentially modified config (self.last_run_config) ---
+        self._proceed_with_analysis(self.last_run_config)
 
     def _proceed_with_analysis(self, config):
         """实际启动后台分析线程"""
@@ -849,7 +855,7 @@ class MainWindow(QMainWindow):
         config['calibration_data'] = self.loaded_calibration_points.copy()
 
         # Store config used for this run to find results later
-        self.last_run_config = config.copy()
+        # self.last_run_config = config.copy() # This is now done in start_analysis
 
         # 创建分析器和线程
         self.analysis_runner = AnalysisRunner(config)
@@ -910,52 +916,65 @@ class MainWindow(QMainWindow):
         self.image_viewer.clear_results() # Clear previous results first
 
         if success:
-            QMessageBox.information(self, "完成", message)
-            # --- Find result images and inform viewer --- #
-            config = self.last_run_config # Use the config from the actual run
-            if config and 'output_dir' in config:
-                summary_file_path = os.path.join(config['output_dir'], 'analysis_summary.json')
-                if os.path.exists(summary_file_path):
-                    try:
-                        with open(summary_file_path, 'r', encoding='utf-8') as f:
-                            summary_data = json.load(f)
+            # QMessageBox.information(self, "完成", message) # 改为最后显示摘要信息
+            results_list = []
+            try:
+                # --- 修改：解析来自 AnalysisRunner 的 message ---
+                results_list = json.loads(message)
+                if not isinstance(results_list, list):
+                    logging.error(f"分析结果格式错误：期望列表，但收到 {type(results_list)}。Message: {message}")
+                    results_list = [] # 重置为空列表以避免后续错误
+            except json.JSONDecodeError:
+                logging.error(f"无法解析来自 AnalysisRunner 的分析结果 JSON: {message}")
+                QMessageBox.critical(self, "错误", "分析完成，但无法解析结果摘要。")
+                results_list = [] # 重置为空列表
+            except Exception as e:
+                 logging.error(f"处理分析结果时发生意外错误: {e}\\nMessage: {message}")
+                 QMessageBox.critical(self, "错误", f"处理分析结果时发生意外错误: {e}")
+                 results_list = [] # 重置为空列表
 
-                        if "image_results" in summary_data and isinstance(summary_data["image_results"], list):
-                            logging.info(f"从摘要加载 {len(summary_data['image_results'])} 个结果图像路径...")
-                            found_any_results = False
-                            for image_result in summary_data["image_results"]:
-                                original_path = image_result.get('original_path')
-                                result_image_path = image_result.get('result_image_path')
-                                if original_path and result_image_path:
-                                     # Make sure the path from JSON is absolute or resolve it
-                                     if not os.path.isabs(result_image_path):
-                                          result_image_path = os.path.abspath(os.path.join(config['output_dir'], result_image_path))
+            # --- 使用解析后的 results_list ---
+            if results_list:
+                logging.info(f"从 AnalysisRunner 加载 {len(results_list)} 个结果摘要...")
+                found_any_results = False
+                summary_message = "分析完成:\\n" # 用于最终弹窗的消息
 
-                                     if os.path.exists(result_image_path):
-                                         self.image_viewer.set_result_image_path(original_path, result_image_path)
-                                         found_any_results = True
-                                     else:
-                                         logging.warning(f"摘要中指定的结果图像不存在: {result_image_path}")
-                                         self.image_viewer.set_result_image_path(original_path, None)
-                                else:
-                                     logging.warning(f"摘要条目缺少 original_path 或 result_image_path: {image_result}")
-                            if not found_any_results:
-                                 logging.warning("摘要文件中未找到有效的可显示结果图像路径。")
-                        else:
-                             logging.error(f"分析摘要文件 '{summary_file_path}' 格式无效或缺少 'image_results' 列表。")
+                for i, image_result in enumerate(results_list):
+                    # --- 修改：传递整个 image_result 字典 --- #
+                    original_path = image_result.get('original_path') # 确保 AnalysisRunner 添加了这个键
+                    if not original_path or not os.path.exists(original_path):
+                         logging.warning(f"结果条目缺少有效的 original_path 或文件不存在: {original_path}. 跳过...")
+                         continue
 
-                    except json.JSONDecodeError as e:
-                         logging.error(f"无法解析分析摘要文件 '{summary_file_path}': {e}")
-                    except Exception as e:
-                         logging.error(f"加载或处理分析摘要时出错: {e}")
+                    # 构建简单的摘要文本
+                    summary_message += f"\\n图像 {i+1}: {os.path.basename(original_path)}\\n"
+                    summary_message += f"  盖度: {image_result.get('草地盖度', 'N/A')}\\n"
+                    summary_message += f"  密度: {image_result.get('草地密度', 'N/A')}\\n"
+                    summary_message += f"  高度: {image_result.get('草地高度', 'N/A')}\\n"
+                    result_img_path = image_result.get('结果图路径') # 键名来自 AnalysisRunner
+                    if result_img_path and os.path.exists(result_img_path):
+                        summary_message += f"  结果图: {os.path.basename(result_img_path)}\\n"
+                    else:
+                        summary_message += f"  结果图: 未生成或未找到\\n"
+
+
+                    self.image_viewer.set_result_data(original_path, image_result)
+                    found_any_results = True # 标记至少找到一个条目
+                    # --- 结束修改 ---\
+
+                if found_any_results:
+                     QMessageBox.information(self, "完成", summary_message)
                 else:
-                     logging.warning(f"未找到预期的分析摘要文件: {summary_file_path}")
+                     logging.warning("分析成功，但结果摘要中未找到包含有效 original_path 的条目。")
+                     QMessageBox.warning(self, "警告", "分析成功，但无法加载任何结果进行显示。")
             else:
-                logging.error("无法获取上次运行的配置或输出目录以加载结果摘要。")
+                # 如果 results_list 为空但 success 为 True (理论上不应发生，除非 Runner 返回空的 '[]')
+                logging.warning("分析成功，但未收到任何结果摘要。")
+                QMessageBox.information(self, "完成", "分析已成功完成，但没有可显示的结果。")
         else:
             QMessageBox.critical(self, "错误", message)
 
-        # --- BEGIN Bug Fix 1: Refresh viewer after analysis ---
+        # --- BEGIN Bug Fix 1: Refresh viewer after analysis (保持不变) ---
         # Ensure the correct view mode button is checked
         self.image_viewer.view_original_button.setChecked(True)
 
@@ -994,8 +1013,7 @@ class MainWindow(QMainWindow):
         self.do_calibration_checkbox.setEnabled(enabled)
         self.save_debug_checkbox.setEnabled(enabled)
         self.calculate_density_checkbox.setEnabled(enabled)
-        self.plot_layout_rows_spin.setEnabled(enabled)
-        self.plot_layout_cols_spin.setEnabled(enabled)
+        self.layout_combo.setEnabled(enabled)
         self.right_params_group.setEnabled(enabled)
         # Lidar (只有在 group 启用且主开关启用时才启用)
         lidar_enabled = enabled and self.right_params_group.isChecked()
@@ -1018,20 +1036,23 @@ class MainWindow(QMainWindow):
                 logging.info("所有手动校准完成，准备开始分析...")
                 QMessageBox.information(self, "校准完成", "所有必需的校准已完成，即将开始分析。")
                 self.image_viewer.exit_calibration_mode() # Add this method to viewer
-                # Retrieve the original config again to start analysis
-                config = self.get_config()
-                if config:
-                    self._proceed_with_analysis(config)
+                # --- FIX 2: Use the stored config instead of calling get_config again --- #
+                if self.last_run_config: # Check if config was stored
+                    # Add the newly saved calibration points to the stored config
+                    # self.last_run_config['calibration_data'][image_path] = points # Already done via self.loaded_calibration_points
+                    self._proceed_with_analysis(self.last_run_config)
                 else:
-                     QMessageBox.critical(self, "错误", "无法在校准后重新获取配置，分析取消。")
+                     QMessageBox.critical(self, "错误", "无法在校准后找到原始配置，分析取消。")
+                     logging.error("校准后 self.last_run_config 为空！")
                      self.set_inputs_enabled(True) # Re-enable inputs
                      self.start_button.setEnabled(True)
+                # --- END FIX 2 ---
             else:
                 # Trigger calibration for the next image
                 next_image = self.pending_calibrations[0]
                 logging.info(f"下一个需要校准的图像: {os.path.basename(next_image)}")
                 QMessageBox.information(self, "继续校准", f"请为下一个图像校准： {os.path.basename(next_image)}")
-                self.image_viewer.set_calibration_mode(next_image)
+                self.image_viewer._set_view_mode(1, target_image_path=next_image)
         else:
              logging.warning(f"收到未知图像的校准保存请求: {image_path}")
 

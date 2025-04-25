@@ -181,15 +181,37 @@ class AnalysisRunner(QObject):
                     result_filename = f"{image_basename}{model_suffix}{layout_suffix}_analysis.png"
                     result_path = os.path.join(output_dir, result_filename)
 
-                    self.current_analyzer.visualize_results(save_path=result_path,
+                    # --- 修改 visualize_results 调用以接收字典 ---
+                    # saved_main_path = self.current_analyzer.visualize_results(
+                    saved_paths = self.current_analyzer.visualize_results(
+                                                          save_path=result_path,
                                                           layout=plot_layout_str, # Pass layout string
                                                           save_debug=save_debug_images,
                                                           calculate_density=calculate_density)
-                    self.log_message.emit(f"分析图像已保存到: {result_path}")
-                    current_image_results["结果图路径"] = result_path
-                    step_progress(7)
+
+                    # --- 检查返回结果并记录 ---
+                    if saved_paths and isinstance(saved_paths, dict) and saved_paths.get('analysis_image'):
+                        main_analysis_path = saved_paths['analysis_image']
+                        self.log_message.emit(f"分析图像已保存到: {main_analysis_path}")
+                        current_image_results["结果图路径"] = main_analysis_path # 主分析图
+                        # 添加其他保存的调试图像路径
+                        for key, path in saved_paths.items():
+                            if key != 'analysis_image':
+                                current_image_results[key] = path # e.g., 'hsv_mask_debug_image': 'path/to/hsv_debug.png'
+                                self.log_message.emit(f"调试图像 [{key}] 已保存到: {path}")
+                    else:
+                        self.log_message.emit("警告: 可视化函数未返回预期的路径字典或主分析图路径。")
+                        current_image_results["结果图路径"] = None
+
+                    # step_progress(7) # 移动到可视化之后
 
                     # --- Image Lidar Analysis (if enabled for this image) ---
+                    lidar_processing_start_progress = image_end_progress # Lidar starts after image processing
+                    lidar_processing_end_progress = lidar_processing_start_progress + int(num_images * lidar_progress_share)
+                    lidar_step_progress = lambda: self.progress_updated.emit(
+                         lidar_processing_start_progress + int((i / num_images) * lidar_progress_share)
+                     )
+
                     if perform_lidar_analysis:
                         lidar_file_base = os.path.splitext(os.path.basename(img_path))[0]
                         # Adjust extension based on your Lidar data format (e.g., .txt, .pcd)
@@ -232,82 +254,136 @@ class AnalysisRunner(QObject):
                     # Assume density map is the final display result here
                     final_result_image_path = result_path # Record path
                     current_image_results["density_percentage"] = round(density_percentage, 2)
-                    current_image_results["calibration_points"] = points_for_this_image.tolist() if points_for_this_image is not None else None
+                    current_image_results["calibration_points"] = points_for_this_image # Already a list
                     # Add other relevant metrics if needed
                     logging.info(f"Density for {image_basename}: {density_percentage:.2f}%")
 
-                    all_results.append(current_image_results)
-                    self.log_message.emit(f"--- 图像 {os.path.basename(img_path)} 处理完成 ---")
-
-                    # Add paths to the results dict for this image
+                    # --- 更新 image_summary 创建逻辑 --- #
+                    # 使用 current_image_results 字典作为基础，因为它已包含所有计算结果和调试路径
                     image_summary = current_image_results.copy()
-                    image_summary['original_path'] = img_path
-                    image_summary['result_image_path'] = final_result_image_path # Add the recorded path
+                    image_summary['original_path'] = img_path # 确保原始路径存在
+                    image_summary["状态"] = "成功" # 标记为成功
+
+                    # 不再需要单独添加 result_image_path，它已包含在 current_image_results 中
+                    # if final_result_image_path:
+                    #     image_summary['result_image_path'] = final_result_image_path
+
+                    # 添加到总列表
                     all_image_summaries.append(image_summary)
 
                 except Exception as img_err:
-                    error_msg = f"处理图像 {os.path.basename(img_path)} 时发生严重错误: {img_err}\\n{traceback.format_exc()}"
+                    error_msg = f"处理图像 {os.path.basename(img_path)} 时发生严重错误: {img_err}"
+                    detailed_error = traceback.format_exc()
                     self.log_message.emit(error_msg)
-                    logging.error(error_msg)
-                    # Optionally decide whether to continue or stop all analysis
-                    # self.analysis_complete.emit(False, f"图像处理失败: {img_err}")
-                    # return
-                    all_results.append({"文件名": os.path.basename(img_path), "错误": str(img_err)})
-                    # Update progress to the end of this image's share
+                    logging.error(f"{error_msg}\n{detailed_error}")
+                    # 记录失败信息到 summary
+                    error_summary = {
+                        "文件名": os.path.basename(img_path),
+                        "分析模型": model_type,
+                        "状态": "失败",
+                        "错误信息": str(img_err), # 简短错误信息
+                        "详细错误": detailed_error # 完整追溯
+                    }
+                    all_image_summaries.append(error_summary)
+                finally:
+                    # 更新进度条，即使出错也要保证前进
                     self.progress_updated.emit(image_end_progress)
+                    self.current_analyzer = None # 清理当前分析器实例
 
             self.log_message.emit("所有图像处理完成。")
             self.progress_updated.emit(image_processing_progress + lidar_progress_share) # Progress after image loop + potential lidar share
 
-            # --- Final Summary Generation ---
-            self.log_message.emit("生成最终报告...")
-            summary_path = os.path.join(output_dir, "analysis_summary.json")
+            # --- Final Summary Saving ---
+            summary_start_progress = image_processing_progress + lidar_progress_share
+            self.progress_updated.emit(summary_start_progress)
+            self.log_message.emit("--- 所有图像处理完成，正在保存分析摘要 ---")
+
+            # --- 修改：为 JSON 文件创建不同的摘要结构 --- #
+            # 1. 提取所有生成的图像路径到一个扁平列表
+            all_generated_paths = []
+            for img_summary in all_image_summaries:
+                if img_summary.get("状态") == "成功":
+                    # 查找所有以 _path 或 _image 结尾的键，并且值是字符串
+                    for key, value in img_summary.items():
+                        if isinstance(value, str) and (
+                            key.endswith('_path') or key.endswith('_image')
+                        ):
+                            if os.path.exists(value): # 确保路径存在
+                                all_generated_paths.append(os.path.normpath(value))
+                            else:
+                                logging.warning(f"摘要中的路径不存在，将忽略: {value}")
+
+            # 去重并排序（可选）
+            all_generated_paths = sorted(list(set(all_generated_paths)))
+
+            # 2. 创建用于 JSON 文件的新摘要字典
+            json_summary = {
+                "run_config": self.config, # 仍然保存运行配置
+                "image_results": all_generated_paths # 使用扁平化的路径列表
+                # 可以根据需要添加其他顶层摘要信息，例如总图像数、成功数等
+            }
+
+            # 3. 保存这个新结构到 JSON 文件
+            summary_file_path = os.path.join(output_dir, "analysis_summary.json")
             try:
-                final_summary_data = {
-                    "run_config": self.config, # Include config used for the run
-                    "image_results": all_image_summaries
-                }
-                with open(summary_path, 'w', encoding='utf-8') as f:
-                    json.dump(final_summary_data, f, indent=4, ensure_ascii=False)
-                self.log_message.emit(f"详细分析摘要已保存到: {summary_path}")
-            except Exception as json_err:
-                 self.log_message.emit(f"保存 JSON 摘要时出错: {json_err}")
+                with open(summary_file_path, 'w', encoding='utf-8') as f:
+                    json.dump(json_summary, f, indent=4, ensure_ascii=False)
+                self.log_message.emit(f"分析摘要 (仅路径列表) 已保存到: {summary_file_path}")
+            except Exception as e:
+                self.log_message.emit(f"保存分析摘要 JSON 时出错: {e}")
+                logging.error(f"Failed to save summary JSON: {traceback.format_exc()}")
+            # --- 结束修改 --- #
 
-            # Create a simple text summary for the log
-            summary_text = ["--- 分析摘要 ---"]
-            for result in all_results:
-                if "错误" in result:
-                    summary_text.append(f"文件: {result['文件名']} -> 错误: {result['错误']}")
-                else:
-                    parts = [f"文件: {result['文件名']}"]
-                    parts.append(f"模型: {result.get('分析模型', 'N/A')}")
-                    parts.append(f"盖度: {result.get('草地盖度', 'N/A')}")
-                    if calculate_density:
-                        parts.append(f"密度: {result.get('草地密度', 'N/A')}")
-                    if perform_lidar_analysis:
-                         parts.append(f"高度: {result.get('草地高度', 'N/A')}")
-                    summary_text.append(" | ".join(parts))
-            summary_log_msg = "\\n".join(summary_text)
-            self.log_message.emit(summary_log_msg)
+            # --- 发射信号：使用原始的、包含详细信息的 all_image_summaries --- #
+            try:
+                # 将原始的字典列表序列化为 JSON 字符串发送给 UI
+                message_to_emit = json.dumps(all_image_summaries, ensure_ascii=False)
+                self.progress_updated.emit(100) # Final progress
+                self.analysis_complete.emit(True, message_to_emit) # 发送包含完整信息的列表
+            except Exception as e:
+                 error_msg = f"序列化详细分析结果以发送到 UI 时出错: {e}"
+                 self.log_message.emit(error_msg)
+                 logging.error(f"{error_msg}\n{traceback.format_exc()}")
+                 # 即使序列化失败，也尝试发送一个通用成功消息，但可能无结果
+                 self.analysis_complete.emit(True, "分析成功完成，但结果无法序列化显示。")
 
-            self.progress_updated.emit(total_steps) # 100%
-            self.analysis_complete.emit(True, "分析成功完成")
+            # --- 旧的保存和发射逻辑 (注释掉或删除) ---
+            # run_summary = {
+            #     "run_config": self.config, # 保存运行配置
+            #     "image_results": all_image_summaries # 保存所有图像的处理结果和路径
+            # }
+            #
+            # summary_file_path = os.path.join(output_dir, "analysis_summary.json")
+            # try:
+            #     with open(summary_file_path, 'w', encoding='utf-8') as f:
+            #         json.dump(run_summary, f, indent=4, ensure_ascii=False)
+            #     self.log_message.emit(f"分析摘要已保存到: {summary_file_path}")
+            # except Exception as e:
+            #     self.log_message.emit(f"保存分析摘要时出错: {e}")
+            #     logging.error(f"Failed to save summary JSON: {traceback.format_exc()}")
+            #
+            # self.progress_updated.emit(100) # Final progress
+            # self.analysis_complete.emit(True, "分析成功完成") # 旧的信号只发送简单消息
+            # --- 结束旧逻辑 ---
 
         except Exception as e:
-            error_msg = f"分析过程中发生严重错误: {e}\\n{traceback.format_exc()}"
+            error_msg = f"分析过程中发生未预料的错误: {e}"
+            detailed_error = traceback.format_exc()
             self.log_message.emit(error_msg)
-            logging.error(error_msg)
+            logging.error(f"{error_msg}\n{detailed_error}")
             self.analysis_complete.emit(False, f"分析失败: {e}")
         finally:
             self._is_running = False
-            self.current_analyzer = None # Clean up reference
+            self.current_analyzer = None # Ensure cleanup
 
     def stop(self):
         """请求停止分析"""
         self._is_running = False
-        self.log_message.emit("收到停止请求...")
-        # Note: The loop in run() checks self._is_running, so it should stop.
-        # If the analyzer itself has long-running steps, they might need internal checks too.
+        if self.current_analyzer:
+             # If the analyzer has a stop method, call it
+             if hasattr(self.current_analyzer, 'stop') and callable(self.current_analyzer.stop):
+                 self.current_analyzer.stop()
+        self.log_message.emit("停止信号已发送。等待当前步骤完成...")
 
 # Add a simple check function if needed
 if __name__ == '__main__':
