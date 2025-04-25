@@ -1,0 +1,290 @@
+from PyQt6.QtCore import QObject, pyqtSignal, QThread
+import logging
+import traceback
+import os
+import json # For saving summary
+
+# 导入分析脚本 - 使用 try-except 以防脚本暂时不存在或路径错误
+try:
+    # from scripts.grass_analysis import GrassAnalyzer, SegmentMethod # Removed SegmentMethod
+    from scripts.grass_analysis import GrassAnalyzer
+    from scripts.dl_grass_analyzer import DeepLearningGrassAnalyzer
+    from scripts.lidar_height_analyzer import analyze_point_cloud # Import the function directly
+    # from scripts.calibration_tool import calibrate_image # Import if calibration UI needs it
+except ImportError as e:
+    logging.error(f"无法导入分析脚本: {e}。请确保 scripts 目录在 PYTHONPATH 中。")
+    # 定义占位符或引发异常，取决于希望如何处理
+    # GrassAnalyzer, SegmentMethod, DeepLearningGrassAnalyzer, analyze_point_cloud = None, None, None, None # Removed SegmentMethod
+    GrassAnalyzer, DeepLearningGrassAnalyzer, analyze_point_cloud = None, None, None
+
+class AnalysisRunner(QObject):
+    """在单独的线程中运行分析任务"""
+    progress_updated = pyqtSignal(int)
+    log_message = pyqtSignal(str)
+    analysis_complete = pyqtSignal(bool, str) # 成功/失败，完成消息
+
+    def __init__(self, config: dict):
+        super().__init__()
+        self.config = config
+        self._is_running = False
+        self.current_analyzer = None # Store the current analyzer instance
+
+    def run(self):
+        """运行分析的核心逻辑"""
+        if not GrassAnalyzer or not DeepLearningGrassAnalyzer or not analyze_point_cloud:
+            self.log_message.emit("错误：未能加载必要的分析模块。请检查脚本路径和依赖。")
+            self.analysis_complete.emit(False, "分析模块加载失败")
+            return
+
+        self._is_running = True
+        self.log_message.emit("开始分析...")
+        self.progress_updated.emit(0)
+        total_steps = 100 # Total progress steps
+
+        try:
+            input_paths = self.config['input_paths']
+            output_dir = self.config['output_dir']
+            model_type = self.config.get('model_type', 'traditional')
+            # segment_method = self.config.get('segment_method', SegmentMethod.HSV) # Removed SegmentMethod usage
+            segment_method_str = self.config.get('segment_method', 'hsv') # Get the string directly
+            do_calibration = self.config.get('do_calibration', False)
+            save_debug_images = self.config.get('save_debug_images', False)
+            calculate_density = self.config.get('calculate_density', True)
+            plot_layout_str = self.config.get('plot_layout_str', 'default') # Get layout string from UI config
+            perform_lidar_analysis = self.config.get('perform_lidar_analysis', False)
+            lidar_dir = self.config.get('lidar_dir', None)
+            dbscan_eps = self.config.get('dbscan_eps', 0.3) # Use the correct UI value
+            dbscan_min_samples = self.config.get('dbscan_min_samples', 2) # Use the correct UI value
+            hsv_config_path = self.config.get('hsv_config_path', None) # For traditional
+
+            os.makedirs(output_dir, exist_ok=True)
+            self.log_message.emit(f"结果将保存到: {os.path.abspath(output_dir)}")
+
+            num_images = len(input_paths)
+            all_results = [] # Store results for each image
+
+            # --- Image Processing Loop ---
+            image_processing_progress = 70 # Allocate 70% for image processing
+            lidar_progress_share = 20 if perform_lidar_analysis else 0 # Allocate 20% for lidar if enabled
+            final_summary_progress = 10 # Allocate 10% for final summary
+
+
+            for i, img_path in enumerate(input_paths):
+                if not self._is_running:
+                    self.log_message.emit("分析被用户中止。")
+                    self.analysis_complete.emit(False, "用户中止")
+                    return
+
+                self.log_message.emit(f"--- 处理图像: {os.path.basename(img_path)} ({i + 1}/{num_images}) ---")
+                current_image_results = {"文件名": os.path.basename(img_path), "分析模型": model_type}
+                image_start_progress = int(i / num_images * image_processing_progress)
+                image_end_progress = int((i + 1) / num_images * image_processing_progress)
+                steps_per_image = 7 # Number of steps within image processing
+
+                step_progress = lambda step: self.progress_updated.emit(image_start_progress + int((step / steps_per_image) * (image_end_progress - image_start_progress)))
+
+                try:
+                    # --- 1. Initialize Analyzer ---
+                    self.log_message.emit("步骤 1/7: 初始化分析器...")
+                    if model_type == 'dl':
+                        # NOTE: DL Analyzer in script doesn't take model_path/device
+                        self.current_analyzer = DeepLearningGrassAnalyzer()
+                        self.log_message.emit("使用深度学习模型进行分析 (默认模型)。")
+                    else:
+                        # NOTE: Traditional Analyzer doesn't take most config in __init__
+                        self.current_analyzer = GrassAnalyzer()
+                        # self.log_message.emit(f"使用传统方法 ({segment_method.name}) 进行分析。") # Adjusted log message
+                        self.log_message.emit(f"使用传统方法 ({segment_method_str}) 进行分析。")
+                        if hsv_config_path:
+                             self.log_message.emit(f"使用 HSV 配置文件: {hsv_config_path}")
+                             # TODO: Need a way to pass hsv_config_path to GrassAnalyzer, maybe a setter?
+                             # Assuming load_image or segment_grass might handle it based on naming conventions
+                             pass
+                    step_progress(1)
+
+                    # --- 2. Load Image ---
+                    self.log_message.emit("步骤 2/7: 加载图像...")
+                    self.current_analyzer.load_image(img_path)
+                    step_progress(2)
+
+                    # --- 3. Calibrate Image ---
+                    # Note: calibrate_image now loads from file if calibration_points is None
+                    self.log_message.emit("步骤 3/7: 应用校准...")
+                    # if do_calibration:
+                    #     self.log_message.emit("执行显式校准... (尚未完全集成到Runner)")
+                    #     # Here you might call calibrate_image from calibration_tool if interactive calibration is needed
+                    #     # For now, assume calibration points are loaded from file or set in analyzer
+                    self.current_analyzer.calibrate_image() # Uses internal or loaded points
+                    self.log_message.emit("校准应用完成 (使用自动加载或默认)。")
+                    step_progress(3)
+
+                    # --- 4. Segment Grass ---
+                    self.log_message.emit("步骤 4/7: 分割草地...")
+                    if model_type == 'dl':
+                         self.current_analyzer.segment_grass()
+                    else:
+                         # self.current_analyzer.segment_grass(method=segment_method.name.lower()) # Pass method name string directly
+                         self.current_analyzer.segment_grass(method=segment_method_str.lower())
+                    self.log_message.emit("草地分割完成。")
+                    step_progress(4)
+
+                    # --- 5. Calculate Coverage ---
+                    self.log_message.emit("步骤 5/7: 计算盖度...")
+                    coverage = self.current_analyzer.calculate_coverage()
+                    current_image_results["草地盖度"] = f"{coverage:.2f}%"
+                    self.log_message.emit(f"盖度: {coverage:.2f}%")
+                    step_progress(5)
+
+                    # --- 6. Calculate Density (Optional) ---
+                    density = None
+                    if calculate_density:
+                        self.log_message.emit("步骤 6/7: 计算密度...")
+                        try:
+                            # Need to call segment_instances first for traditional method
+                            if model_type != 'dl':
+                                self.log_message.emit("  - (传统) 执行实例分割...")
+                                self.current_analyzer.segment_instances() # Default method is watershed
+                            density = self.current_analyzer.calculate_density() # Uses instance segmentation results
+                            current_image_results["草地密度"] = f"{density} 株/平方米"
+                            self.log_message.emit(f"密度: {density} 株/平方米")
+                        except Exception as density_err:
+                             self.log_message.emit(f"计算密度时出错: {density_err}")
+                             current_image_results["草地密度"] = "计算失败"
+                    else:
+                         self.log_message.emit("步骤 6/7: 跳过密度计算。")
+                         current_image_results["草地密度"] = "未计算"
+                    step_progress(6)
+
+
+                    # --- 7. Visualize Results ---
+                    self.log_message.emit("步骤 7/7: 生成可视化结果...")
+                    # Create unique filename based on input path relative to the base input dir if possible
+                    base_input_dir = os.path.dirname(input_paths[0]) if len(input_paths) == 1 else self.config.get('base_input_dir', os.path.dirname(img_path))
+                    rel_img_path = os.path.relpath(img_path, start=base_input_dir)
+                    image_basename = os.path.splitext(rel_img_path.replace(os.path.sep, '_'))[0]
+
+                    model_suffix = "_dl" if model_type == 'dl' else "_traditional"
+                    layout_suffix = f"_{plot_layout_str}" # Use string from config
+
+                    result_filename = f"{image_basename}{model_suffix}{layout_suffix}_analysis.png"
+                    result_path = os.path.join(output_dir, result_filename)
+
+                    self.current_analyzer.visualize_results(save_path=result_path,
+                                                          layout=plot_layout_str, # Pass layout string
+                                                          save_debug=save_debug_images,
+                                                          calculate_density=calculate_density)
+                    self.log_message.emit(f"分析图像已保存到: {result_path}")
+                    current_image_results["结果图路径"] = result_path
+                    step_progress(7)
+
+                    # --- Image Lidar Analysis (if enabled for this image) ---
+                    if perform_lidar_analysis:
+                        lidar_file_base = os.path.splitext(os.path.basename(img_path))[0]
+                        # Adjust extension based on your Lidar data format (e.g., .txt, .pcd)
+                        lidar_file_path = os.path.join(lidar_dir, f"{lidar_file_base}.txt")
+
+                        if os.path.exists(lidar_file_path):
+                            self.log_message.emit(f"  - 发现对应的 Lidar 文件: {lidar_file_path}, 开始高度分析...")
+                            try:
+                                # Call the imported function directly
+                                height_results = analyze_point_cloud(
+                                    lidar_file_path,
+                                    output_dir=output_dir, # Pass output dir for potential plots from lidar script
+                                    eps=dbscan_eps,
+                                    min_samples=dbscan_min_samples
+                                )
+                                if height_results and height_results.get("草高(m)") is not None:
+                                    grass_height_m = height_results["草高(m)"]
+                                    current_image_results["草地高度"] = f"{grass_height_m:.3f}m"
+                                    self.log_message.emit(f"  - Lidar 分析完成。草高: {grass_height_m:.3f}m")
+                                    # Optionally add other lidar results
+                                    current_image_results["地面高度"] = f"{height_results.get('地面高度(m)', 'N/A'):.3f}m"
+                                    current_image_results["最大高度点"] = f"{height_results.get('最大高度点(m)', 'N/A'):.3f}m"
+
+                                else:
+                                    self.log_message.emit("  - Lidar 分析未返回有效高度。")
+                                    current_image_results["草地高度"] = "分析失败或无结果"
+                            except Exception as lidar_err:
+                                self.log_message.emit(f"  - Lidar 分析过程中发生错误: {lidar_err}")
+                                logging.error(f"Lidar analysis error for {lidar_file_path}: {traceback.format_exc()}")
+                                current_image_results["草地高度"] = "分析出错"
+                        else:
+                            self.log_message.emit(f"  - 未找到对应的 Lidar 文件: {lidar_file_path}")
+                            current_image_results["草地高度"] = "无数据"
+                    else:
+                         current_image_results["草地高度"] = "未分析"
+
+                    all_results.append(current_image_results)
+                    self.log_message.emit(f"--- 图像 {os.path.basename(img_path)} 处理完成 ---")
+
+
+                except Exception as img_err:
+                    error_msg = f"处理图像 {os.path.basename(img_path)} 时发生严重错误: {img_err}\\n{traceback.format_exc()}"
+                    self.log_message.emit(error_msg)
+                    logging.error(error_msg)
+                    # Optionally decide whether to continue or stop all analysis
+                    # self.analysis_complete.emit(False, f"图像处理失败: {img_err}")
+                    # return
+                    all_results.append({"文件名": os.path.basename(img_path), "错误": str(img_err)})
+                    # Update progress to the end of this image's share
+                    self.progress_updated.emit(image_end_progress)
+
+
+            self.log_message.emit("所有图像处理完成。")
+            self.progress_updated.emit(image_processing_progress + lidar_progress_share) # Progress after image loop + potential lidar share
+
+            # --- Final Summary Generation ---
+            self.log_message.emit("生成最终报告...")
+            summary_path = os.path.join(output_dir, "analysis_summary.json")
+            try:
+                with open(summary_path, 'w', encoding='utf-8') as f:
+                    json.dump(all_results, f, indent=4, ensure_ascii=False)
+                self.log_message.emit(f"详细分析摘要已保存到: {summary_path}")
+            except Exception as json_err:
+                 self.log_message.emit(f"保存 JSON 摘要时出错: {json_err}")
+
+
+            # Create a simple text summary for the log
+            summary_text = ["--- 分析摘要 ---"]
+            for result in all_results:
+                if "错误" in result:
+                    summary_text.append(f"文件: {result['文件名']} -> 错误: {result['错误']}")
+                else:
+                    parts = [f"文件: {result['文件名']}"]
+                    parts.append(f"模型: {result.get('分析模型', 'N/A')}")
+                    parts.append(f"盖度: {result.get('草地盖度', 'N/A')}")
+                    if calculate_density:
+                        parts.append(f"密度: {result.get('草地密度', 'N/A')}")
+                    if perform_lidar_analysis:
+                         parts.append(f"高度: {result.get('草地高度', 'N/A')}")
+                    summary_text.append(" | ".join(parts))
+            summary_log_msg = "\\n".join(summary_text)
+            self.log_message.emit(summary_log_msg)
+
+            self.progress_updated.emit(total_steps) # 100%
+            self.analysis_complete.emit(True, "分析成功完成")
+
+        except Exception as e:
+            error_msg = f"分析过程中发生严重错误: {e}\\n{traceback.format_exc()}"
+            self.log_message.emit(error_msg)
+            logging.error(error_msg)
+            self.analysis_complete.emit(False, f"分析失败: {e}")
+        finally:
+            self._is_running = False
+            self.current_analyzer = None # Clean up reference
+
+    def stop(self):
+        """请求停止分析"""
+        self._is_running = False
+        self.log_message.emit("收到停止请求...")
+        # Note: The loop in run() checks self._is_running, so it should stop.
+        # If the analyzer itself has long-running steps, they might need internal checks too.
+
+# Add a simple check function if needed
+if __name__ == '__main__':
+    # Example usage for testing (replace with actual config)
+    print("Testing AnalysisRunner structure...")
+    # config_test = { ... }
+    # runner = AnalysisRunner(config_test)
+    # runner.run() # Run directly for testing without thread
+    print("AnalysisRunner defined.") 

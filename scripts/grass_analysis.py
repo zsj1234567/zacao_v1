@@ -54,13 +54,22 @@ class GrassAnalyzer:
         self.calibration_area_pixels = None  # 校准区域的实际面积（像素数）
 
     def load_image(self, image_path):
-        """加载图像并尝试加载对应的校准文件"""
+        """加载图像并尝试加载对应的校准文件 (支持非ASCII路径)"""
         if not os.path.exists(image_path):
             raise FileNotFoundError(f"图像文件 {image_path} 不存在")
 
-        self.original_image = cv2.imread(image_path)
+        # self.original_image = cv2.imread(image_path)
+        # 使用 imdecode 处理非 ASCII 路径
+        try:
+            # 先用 numpy 读取文件字节
+            n = np.fromfile(image_path, dtype=np.uint8)
+            # 然后用 OpenCV 从内存解码
+            self.original_image = cv2.imdecode(n, cv2.IMREAD_COLOR)
+        except Exception as e:
+             raise ValueError(f"使用 numpy/cv2.imdecode 读取图像时出错 {image_path}: {e}")
+
         if self.original_image is None:
-            raise ValueError(f"无法读取图像 {image_path}")
+            raise ValueError(f"无法读取或解码图像 {image_path} (cv2.imdecode 返回 None)")
 
         # 转换为RGB颜色空间（OpenCV默认为BGR）
         self.original_image = cv2.cvtColor(
@@ -121,6 +130,9 @@ class GrassAnalyzer:
             h, w = self.original_image.shape[:2]
             self.calibration_points = [(0, 0), (w-1, 0), (w-1, h-1), (0, h-1)]
             self.calibrated_image = self.original_image.copy()
+            # 设置校准区域像素为整个图像的像素
+            self.calibration_area_pixels = h * w
+            print(f"警告: 未找到校准点，使用整个图像区域 ({w}x{h}) 进行分析。密度计算将基于此区域假定为1平方米。")
             return self.calibrated_image
 
         # 确保校准点是按顺时针排序的
@@ -559,6 +571,18 @@ class GrassAnalyzer:
         """
         if self.mask is None:
             self.segment_grass()
+
+        # 增加检查确保 calibration_area_pixels 有效
+        if self.calibration_area_pixels is None or self.calibration_area_pixels <= 0:
+            print("[错误] 校准区域面积无效或未计算，无法计算密度。")
+            # 尝试重新运行校准以计算面积
+            if self.original_image is not None:
+                print("尝试重新运行校准...")
+                self.calibrate_image()
+                if self.calibration_area_pixels is None or self.calibration_area_pixels <= 0:
+                    return 0 # 或者 raise ValueError("无法获取有效的校准区域面积")
+            else:
+                return 0 # 或者 raise ValueError("无法获取有效的校准区域面积")
 
         # 获取校准区域的实际面积（像素数）
         if not hasattr(self, 'calibration_area_pixels'):

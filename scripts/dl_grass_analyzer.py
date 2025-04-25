@@ -89,14 +89,22 @@ class DeepLearningGrassAnalyzer:
 
     def load_image(self, image_path):
         """
-        加载图像
+        加载图像 (支持非ASCII路径)
 
         参数:
             image_path: 图像文件路径
         """
-        self.original_image = cv2.imread(image_path)
+        # self.original_image = cv2.imread(image_path)
+        # 使用 imdecode 处理非 ASCII 路径
+        try:
+            n = np.fromfile(image_path, dtype=np.uint8)
+            self.original_image = cv2.imdecode(n, cv2.IMREAD_COLOR)
+        except Exception as e:
+             raise ValueError(f"使用 numpy/cv2.imdecode 读取图像时出错 {image_path}: {e}")
+
         if self.original_image is None:
-            raise ValueError(f"无法加载图像: {image_path}")
+            # raise ValueError(f"无法加载图像: {image_path}")
+            raise ValueError(f"无法读取或解码图像 {image_path} (cv2.imdecode 返回 None)")
 
         # 转换为RGB（OpenCV默认是BGR）
         self.original_image = cv2.cvtColor(
