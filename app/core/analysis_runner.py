@@ -26,6 +26,7 @@ class AnalysisRunner(QObject):
     def __init__(self, config: dict):
         super().__init__()
         self.config = config
+        self.calibration_data = config.get('calibration_data', {}) # Get pre-loaded points
         self._is_running = False
         self.current_analyzer = None # Store the current analyzer instance
 
@@ -110,12 +111,23 @@ class AnalysisRunner(QObject):
                     # --- 3. Calibrate Image ---
                     # Note: calibrate_image now loads from file if calibration_points is None
                     self.log_message.emit("步骤 3/7: 应用校准...")
+                    # Get pre-loaded points for this image, if any
+                    points_for_this_image = self.calibration_data.get(img_path)
+
                     # if do_calibration:
                     #     self.log_message.emit("执行显式校准... (尚未完全集成到Runner)")
                     #     # Here you might call calibrate_image from calibration_tool if interactive calibration is needed
                     #     # For now, assume calibration points are loaded from file or set in analyzer
-                    self.current_analyzer.calibrate_image() # Uses internal or loaded points
-                    self.log_message.emit("校准应用完成 (使用自动加载或默认)。")
+                    # self.current_analyzer.calibrate_image() # Uses internal or loaded points
+                    if points_for_this_image:
+                         self.log_message.emit(f"  - 使用预加载/保存的校准点: {points_for_this_image}")
+                         self.current_analyzer.calibrate_image(points=points_for_this_image)
+                    else:
+                         # No pre-loaded points, rely on analyzer's internal loading or default
+                         self.log_message.emit("  - 未提供校准点，依赖分析器自动加载或默认行为。")
+                         self.current_analyzer.calibrate_image()
+
+                    self.log_message.emit("校准应用完成。")
                     step_progress(3)
 
                     # --- 4. Segment Grass ---

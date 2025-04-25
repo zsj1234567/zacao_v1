@@ -9,6 +9,21 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPalette, QColor, QFont
+import json # For calibration saving/loading
+
+# 导入新的可视化窗口部件
+try:
+    from app.ui.image_viewer import ImageViewerWidget
+except ImportError:
+    # 创建一个临时的占位符，以防文件尚未创建
+    class ImageViewerWidget(QWidget):
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            layout = QVBoxLayout(self)
+            label = QLabel("可视化窗口占位符")
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(label)
+            self.setStyleSheet("border: 1px solid gray;")
 
 # 动态添加项目根目录到 sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
@@ -28,6 +43,8 @@ class MainWindow(QMainWindow):
 
         self.analysis_thread = None
         self.analysis_runner = None
+        self.pending_calibrations = [] # List of image paths needing manual calibration
+        self.loaded_calibration_points = {} # Dict to store loaded/saved points {img_path: points}
 
         # 设置暗色主题 (可选)
         self.setup_dark_theme()
@@ -38,15 +55,20 @@ class MainWindow(QMainWindow):
         # --- 主布局 ---
         self.main_widget = QWidget()
         self.setCentralWidget(self.main_widget)
-        self.main_layout = QVBoxLayout(self.main_widget)
-        self.main_layout.setSpacing(15)
-        self.main_layout.setContentsMargins(20, 20, 20, 20)
+        self.main_h_layout = QHBoxLayout(self.main_widget)
+
+        # --- 左侧: 配置面板 ---
+        self.config_widget = QWidget()
+        self.config_layout = QVBoxLayout(self.config_widget)
+        self.config_layout.setSpacing(15)
+        self.config_layout.setContentsMargins(0, 0, 0, 0) # 移除边距，由父布局控制
+        self.main_h_layout.addWidget(self.config_widget, 1) # 配置面板占1份
 
         # --- 顶部: 输入和输出选择 ---
         io_group = QGroupBox("输入与输出")
         io_layout = QVBoxLayout()
         io_group.setLayout(io_layout)
-        self.main_layout.addWidget(io_group)
+        self.config_layout.addWidget(io_group)
 
         # 输入路径
         input_layout = QHBoxLayout()
@@ -72,24 +94,39 @@ class MainWindow(QMainWindow):
         output_layout.addWidget(self.browse_output_button)
         io_layout.addLayout(output_layout)
 
-        # --- 调整输入输出标签宽度和对齐 ---
-        # 计算最大标签宽度
+        # --- 新增：校准文件/文件夹路径 ---
+        calibration_layout = QHBoxLayout()
+        self.calibration_label = QLabel("校准文件/目录:")
+        self.calibration_path_edit = QLineEdit()
+        self.calibration_path_edit.setPlaceholderText("可选：包含校准 .json 文件的目录或特定文件")
+        self.browse_calibration_button = QPushButton("浏览...")
+        self.browse_calibration_button.clicked.connect(self.browse_calibration)
+        calibration_layout.addWidget(self.calibration_label)
+        calibration_layout.addWidget(self.calibration_path_edit)
+        calibration_layout.addWidget(self.browse_calibration_button)
+        io_layout.addLayout(calibration_layout)
+
+        # --- 调整标签宽度和对齐 (包括新的校准标签) ---
         input_fm = self.input_label.fontMetrics()
         output_fm = self.output_label.fontMetrics()
+        calib_fm = self.calibration_label.fontMetrics()
         # Use boundingrect for more accurate width
         input_width = input_fm.boundingRect(self.input_label.text()).width()
         output_width = output_fm.boundingRect(self.output_label.text()).width()
-        max_label_width = max(input_width, output_width) + 10 # Add a small margin
+        calib_width = calib_fm.boundingRect(self.calibration_label.text()).width()
+        max_label_width = max(input_width, output_width, calib_width) + 10 # Add a small margin
 
         # 设置固定宽度和右对齐
         self.input_label.setFixedWidth(max_label_width)
         self.input_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.output_label.setFixedWidth(max_label_width)
         self.output_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.calibration_label.setFixedWidth(max_label_width)
+        self.calibration_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         # --- 中部: 分析参数配置 ---
         params_layout = QHBoxLayout()
-        self.main_layout.addLayout(params_layout)
+        self.config_layout.addLayout(params_layout)
 
         # 左侧参数组
         left_params_group = QGroupBox("分析模型与方法")
@@ -225,7 +262,7 @@ class MainWindow(QMainWindow):
 
         # --- 底部: 进度条、日志和控制按钮 ---
         bottom_layout = QVBoxLayout()
-        self.main_layout.addLayout(bottom_layout)
+        self.config_layout.addLayout(bottom_layout)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
@@ -240,7 +277,7 @@ class MainWindow(QMainWindow):
         self.log_edit.setMinimumHeight(200)
         self.log_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         bottom_layout.addWidget(self.log_edit)
-        self.main_layout.setStretchFactor(bottom_layout, 1) # 让日志区域占据更多垂直空间
+        self.main_h_layout.setStretchFactor(bottom_layout, 1) # 让日志区域占据更多垂直空间
 
         control_layout = QHBoxLayout()
         self.start_button = QPushButton("开始分析")
@@ -256,8 +293,14 @@ class MainWindow(QMainWindow):
         control_layout.addStretch()
         bottom_layout.addLayout(control_layout)
 
+        # --- 右侧: 可视化窗口 ---
+        self.image_viewer = ImageViewerWidget()
+        self.main_h_layout.addWidget(self.image_viewer, 2) # 可视化窗口占2份
+
         # 连接日志信号
         self.log_signal.connect(self.append_log)
+        # 连接校准保存信号
+        self.image_viewer.calibration_save_requested.connect(self.on_calibration_saved)
 
     def setup_dark_theme(self):
         """应用一个简单的暗色主题"""
@@ -397,6 +440,19 @@ class MainWindow(QMainWindow):
         if path:
             self.lidar_dir_edit.setText(path)
 
+    def browse_calibration(self):
+        """浏览校准文件或目录"""
+        dialog = QFileDialog(self)
+        # 允许选择文件或目录
+        path = QFileDialog.getExistingDirectory(self, "选择校准目录", "", QFileDialog.Option.ShowDirsOnly)
+        if path:
+            self.calibration_path_edit.setText(path)
+            return
+        # 如果没选目录，尝试选文件
+        file, _ = QFileDialog.getOpenFileName(self, "选择校准文件", "", "JSON 文件 (*.json)")
+        if file:
+             self.calibration_path_edit.setText(file)
+
     def update_parameter_visibility(self):
         is_dl_model = self.model_type_combo.currentText() == "深度学习"
 
@@ -437,6 +493,7 @@ class MainWindow(QMainWindow):
         config = {}
         input_path = self.input_path_edit.text().strip()
         output_dir = self.output_path_edit.text().strip()
+        calibration_path = self.calibration_path_edit.text().strip() # 获取校准路径
 
         if not input_path:
             QMessageBox.warning(self, "输入错误", "请选择输入图片或文件夹。")
@@ -479,6 +536,7 @@ class MainWindow(QMainWindow):
 
         config['input_paths'] = normalized_input_paths
         config['output_dir'] = output_dir
+        config['calibration_path'] = calibration_path if calibration_path else None # 添加到配置
 
         # 分析模型和方法
         is_dl_model = self.model_type_combo.currentText() == "深度学习"
@@ -531,14 +589,98 @@ class MainWindow(QMainWindow):
         if config is None:
             return # 配置无效
 
+        # -- Clear previous state --
+        self.pending_calibrations = []
+        self.loaded_calibration_points = {}
+        self.log_edit.clear() # Clear previous logs
+        self.progress_bar.setValue(0)
+
+        # -- Populate Image Viewer --
+        # Do this early so user sees images even if calibration is needed
+        self.image_viewer.load_images(config['input_paths'])
+
         if self.analysis_thread and self.analysis_thread.isRunning():
             QMessageBox.warning(self, "正在运行", "分析任务已在运行中。")
             return
 
-        self.log_edit.clear() # 清空上次日志
-        self.progress_bar.setValue(0)
-        logging.info("获取配置并准备开始分析...")
+        logging.info("获取配置。")
+
+        # --- Calibration Handling --- 
+        do_calib = config.get('do_calibration', False)
+        calib_path_input = config.get('calibration_path')
+        input_image_paths = config['input_paths']
+
+        if do_calib:
+            logging.info("检查校准文件...")
+            # Determine the directory to search/save calibrations
+            calib_dir_to_use = None
+            if calib_path_input:
+                if os.path.isdir(calib_path_input):
+                    calib_dir_to_use = calib_path_input
+                elif os.path.isfile(calib_path_input):
+                    # If a file is given, use its directory
+                    calib_dir_to_use = os.path.dirname(calib_path_input)
+                else:
+                     logging.warning(f"提供的校准路径无效: {calib_path_input}")
+
+            if not calib_dir_to_use:
+                 calib_dir_to_use = os.path.join(os.path.dirname(config['output_dir']), 'calibrations') # Default near output
+                 logging.info(f"未提供有效校准目录，将使用默认位置: {calib_dir_to_use}")
+                 os.makedirs(calib_dir_to_use, exist_ok=True)
+
+            self.effective_calibration_dir = calib_dir_to_use # Store for saving later
+            self.image_viewer.set_calibration_save_dir(self.effective_calibration_dir)
+
+            for img_path in input_image_paths:
+                 img_basename = os.path.splitext(os.path.basename(img_path))[0]
+                 expected_json_path = os.path.join(self.effective_calibration_dir, f"{img_basename}.json")
+
+                 if os.path.exists(expected_json_path):
+                     try:
+                         with open(expected_json_path, 'r') as f:
+                             points = json.load(f)
+                             if isinstance(points, list) and len(points) == 4:
+                                 self.loaded_calibration_points[img_path] = points
+                                 logging.info(f"为 {os.path.basename(img_path)} 加载校准点: {points}")
+                             else:
+                                 logging.warning(f"校准文件 {expected_json_path} 格式无效，需要手动校准。")
+                                 self.pending_calibrations.append(img_path)
+                     except Exception as e:
+                         logging.error(f"加载校准文件 {expected_json_path} 时出错: {e}，需要手动校准。")
+                         self.pending_calibrations.append(img_path)
+                 else:
+                      logging.info(f"未找到校准文件 {expected_json_path}，需要手动校准。")
+                      self.pending_calibrations.append(img_path)
+
+            # --- Trigger Manual Calibration if Needed ---
+            if self.pending_calibrations:
+                logging.info(f"需要手动校准 {len(self.pending_calibrations)} 张图像。")
+                self.start_button.setEnabled(False) # Keep start disabled
+                self.set_inputs_enabled(False) # Keep inputs disabled
+                QMessageBox.information(self, "需要校准",
+                                        f"请在右侧窗口为 {len(self.pending_calibrations)} 张图像选择1平方米区域的4个角点。\n" +
+                                        '完成后点击"保存校准"按钮。')
+                # Start calibration for the first image
+                first_image_to_calibrate = self.pending_calibrations[0]
+                self.image_viewer.set_calibration_mode(first_image_to_calibrate)
+                return # Stop here, wait for on_calibration_saved signal
+            else:
+                 logging.info("所有图像均找到有效校准文件或不需要校准。")
+
+        else: # Not doing calibration
+             logging.info("跳过校准步骤。")
+
+        # --- If we reach here, either calibration is done/skipped --- 
+        self._proceed_with_analysis(config)
+
+    def _proceed_with_analysis(self, config):
+        """实际启动后台分析线程"""
+        logging.info("准备开始后台分析...")
         logging.info(f"配置详情: {config}")
+        logging.info(f"使用的校准点: {self.loaded_calibration_points}")
+
+        # Add loaded calibration points to the config for the runner
+        config['calibration_data'] = self.loaded_calibration_points.copy()
 
         # 创建分析器和线程
         self.analysis_runner = AnalysisRunner(config)
@@ -593,6 +735,11 @@ class MainWindow(QMainWindow):
         self.analysis_thread = None
         self.analysis_runner = None
 
+        # Re-enable UI for next run (or maybe keep disabled until explicitly cleared?)
+        # For now, re-enable
+        self.set_inputs_enabled(True)
+        self.image_viewer.setEnabled(True)
+
         if success:
             QMessageBox.information(self, "完成", message)
         else:
@@ -625,6 +772,37 @@ class MainWindow(QMainWindow):
         # 确保 groupbox 本身可以切换
         if enabled: # 只有在分析结束时才恢复勾选框本身的可编辑性
             self.right_params_group.setEnabled(True)
+        self.calibration_path_edit.setEnabled(enabled) # 控制校准路径输入框
+        self.browse_calibration_button.setEnabled(enabled)
+
+    def on_calibration_saved(self, image_path, points):
+        """当用户在 ImageViewer 中保存校准点时调用"""
+        logging.info(f"收到来自查看器的校准点: {image_path} -> {points}")
+        if image_path in self.pending_calibrations:
+            self.loaded_calibration_points[image_path] = points
+            self.pending_calibrations.remove(image_path)
+
+            if not self.pending_calibrations:
+                # All calibrations are done!
+                logging.info("所有手动校准完成，准备开始分析...")
+                QMessageBox.information(self, "校准完成", "所有必需的校准已完成，即将开始分析。")
+                self.image_viewer.exit_calibration_mode() # Add this method to viewer
+                # Retrieve the original config again to start analysis
+                config = self.get_config()
+                if config:
+                    self._proceed_with_analysis(config)
+                else:
+                     QMessageBox.critical(self, "错误", "无法在校准后重新获取配置，分析取消。")
+                     self.set_inputs_enabled(True) # Re-enable inputs
+                     self.start_button.setEnabled(True)
+            else:
+                # Trigger calibration for the next image
+                next_image = self.pending_calibrations[0]
+                logging.info(f"下一个需要校准的图像: {os.path.basename(next_image)}")
+                QMessageBox.information(self, "继续校准", f"请为下一个图像校准： {os.path.basename(next_image)}")
+                self.image_viewer.set_calibration_mode(next_image)
+        else:
+             logging.warning(f"收到未知图像的校准保存请求: {image_path}")
 
     def closeEvent(self, event):
         """关闭窗口前检查是否有正在运行的分析"""

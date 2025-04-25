@@ -124,6 +124,13 @@ class GrassAnalyzer:
         """
         if points is not None:
             self.calibration_points = points
+            print("使用外部提供的校准点进行校准。")
+            # 如果外部提供了点，则不再尝试从文件加载
+        elif self.calibration_points is None:
+            # 仅当未提供外部点且内部点为 None 时才尝试加载文件
+            # Load calibration implicitly tries to load if self.calibration_points is None
+            # No specific call needed here if load_image was called first
+            pass # Loading is attempted in load_image if points were None initially
 
         if self.calibration_points is None:
             # 如果没有提供校准点，使用整个图像

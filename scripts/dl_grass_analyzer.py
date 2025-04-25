@@ -122,8 +122,11 @@ class DeepLearningGrassAnalyzer:
         返回:
             校准后的图像
         """
+        # 优先使用传入的 points 参数
         if points is not None:
             self.calibration_points = points
+            print("使用外部提供的校准点进行校准。")
+        # 如果没有传入 points，则保留 self.calibration_points (可能在 __init__ 中设置)
 
         # 如果没有校准点，使用整个图像
         if self.calibration_points is None:
