@@ -43,8 +43,11 @@ class ImageViewerWidget(QWidget):
         # --- 左侧: 预览列表 ---
         self.preview_list = QListWidget()
         # Increase icon size to be wider, adjust height proportionally if needed
-        self.preview_list.setIconSize(QSize(120, 90)) # 设置图标大小
-        self.preview_list.setFixedWidth(140) # 固定宽度
+        preview_list_width = 120 # Reduced width
+        icon_width = preview_list_width - 20 # Icon width slightly smaller than list width
+        icon_height = int(icon_width * 0.75) # Maintain aspect ratio (e.g., 4:3)
+        self.preview_list.setIconSize(QSize(icon_width, icon_height))
+        self.preview_list.setFixedWidth(preview_list_width)
         # Add border-radius and padding for items
         self.preview_list.setStyleSheet("""
             QListWidget {
@@ -52,8 +55,11 @@ class ImageViewerWidget(QWidget):
                 border-radius: 5px; /* Add border-radius */
             }
             QListWidget::item {
-                padding: 5px; /* Add some padding around items */
+                padding: 5px 0px; /* Adjust padding (top/bottom 5px, left/right 0) */
                 margin: 2px; /* Add small margin between items */
+                text-align: center; /* Center text (might not affect icon) */
+                /* Attempting icon centering - might require more advanced methods */
+                background-color: transparent; /* Ensure background doesn't interfere */
             }
         """)
         self.preview_list.setViewMode(QListWidget.ViewMode.IconMode) # 图标模式
@@ -315,8 +321,19 @@ class ImageViewerWidget(QWidget):
             target_mode = 'result'
 
         if target_mode == self.current_view_mode:
+            # If switching *to* calibration mode, ensure cursor updates
+            if target_mode == 'calibration':
+                 self.graphics_view.viewport().setCursor(Qt.CursorShape.CrossCursor)
             # print(f"[Viewer] View mode already set to {target_mode}, skipping.")
             return # No change needed
+
+        # Set cursor based on mode
+        if target_mode == 'calibration':
+            self.graphics_view.setDragMode(QGraphicsView.DragMode.NoDrag) # Disable dragging
+            self.graphics_view.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.graphics_view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag) # Re-enable dragging
+            self.graphics_view.viewport().setCursor(Qt.CursorShape.ArrowCursor)
 
         print(f"[Viewer] Switching view mode to: {target_mode}")
         previous_mode = self.current_view_mode
@@ -372,6 +389,8 @@ class ImageViewerWidget(QWidget):
                         self.calibration_points.append((item_pos.x(), item_pos.y()))
                         print(f"[Viewer] Calibration point {len(self.calibration_points)} added: ({item_pos.x()}, {item_pos.y()})")
                         self._redraw_calibration_points()
+                        # Ensure cursor stays as crosshair after adding point
+                        self.graphics_view.viewport().setCursor(Qt.CursorShape.CrossCursor)
                         # self.calibration_point_selected.emit(self.current_image_path, item_pos.x(), item_pos.y())
                         return True # 事件已处理
                 else:
@@ -412,11 +431,12 @@ class ImageViewerWidget(QWidget):
              return
 
         # 绘制新的点和线
-        pen = QPen(QColor("red"), 5)
-        line_pen = QPen(QColor("lime"), 2)
-        point_radius = 4 # Controls the size of the red dot
-        label_offset_x = 5
-        label_offset_y = -15
+        point_pen = QPen(QColor(255, 0, 0), 30) # 亮红色点轮廓
+        point_brush = QColor(255, 0, 0, 200) # 半透明亮红色填充
+        line_pen = QPen(QColor(255, 0, 0, 230), 30) # 亮红色粗线
+        point_radius = 10 # 较大的点半径
+        label_offset_x = 10
+        label_offset_y = -20
 
         # Ensure points are within bounds (precautionary)
         pixmap_rect = self.current_pixmap_item.boundingRect()
@@ -439,8 +459,8 @@ class ImageViewerWidget(QWidget):
             # 绘制点
             ellipse = QGraphicsEllipseItem(scene_pt.x() - point_radius, scene_pt.y() - point_radius,
                                            point_radius * 2, point_radius * 2)
-            ellipse.setPen(pen)
-            ellipse.setBrush(QColor("red"))
+            ellipse.setPen(point_pen)
+            ellipse.setBrush(point_brush)
             self.current_scene.addItem(ellipse)
 
             # 绘制序号

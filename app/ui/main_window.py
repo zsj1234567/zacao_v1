@@ -45,6 +45,7 @@ class MainWindow(QMainWindow):
         self.analysis_runner = None
         self.pending_calibrations = [] # List of image paths needing manual calibration
         self.loaded_calibration_points = {} # Dict to store loaded/saved points {img_path: points}
+        self.last_run_config = None
 
         # 设置暗色主题 (可选)
         self.apply_stylesheet()
@@ -179,6 +180,7 @@ class MainWindow(QMainWindow):
 
         # 通用参数
         self.do_calibration_checkbox = QCheckBox("执行相机校准")
+        self.do_calibration_checkbox.setChecked(True)
         left_params_form_layout.addRow(self.do_calibration_checkbox)
 
         self.save_debug_checkbox = QCheckBox("保存调试图像")
@@ -186,7 +188,6 @@ class MainWindow(QMainWindow):
         left_params_form_layout.addRow(self.save_debug_checkbox)
 
         self.calculate_density_checkbox = QCheckBox("计算覆盖密度")
-        self.calculate_density_checkbox.setChecked(True)
         left_params_form_layout.addRow(self.calculate_density_checkbox)
 
         plot_layout_label = QLabel("绘图布局 (行, 列):")
@@ -365,7 +366,7 @@ class MainWindow(QMainWindow):
                 padding: 1px 5px;
             }
             QListWidget {
-                border-radius: 3px;
+                border-radius: 0px;
             }
             QSplitter::handle {
                 background-color: #444;
@@ -457,23 +458,96 @@ class MainWindow(QMainWindow):
             }
             QPushButton#browse_button:hover { background-color: #666; }
             QPushButton#browse_button:pressed { background-color: #777; }
+
+            /* Preview List selection style */
+            QListWidget::item:selected {
+                 background-color: rgba(66, 135, 245, 100); /* Semi-transparent light blue */
+                 color: white; /* Ensure text stays white */
+                 border: 1px solid #55aaff; /* Add a border for clarity */
+                 border-radius: 3px;
+            }
+            QListWidget::item:selected:!active {
+                 background-color: rgba(66, 135, 245, 80); /* Slightly less prominent when not active */
+            }
         """)
+
+    def _handle_input_path_selection(self, selected_path_or_files):
+        """Handles logic after input path/files are selected via browse."""
+        input_paths = []
+        display_text = ""
+
+        if isinstance(selected_path_or_files, list): # Multiple files selected
+             input_paths = [p for p in selected_path_or_files if os.path.isfile(p)]
+             display_text = ";".join(input_paths)
+        elif isinstance(selected_path_or_files, str): # Single path (file or dir)
+             path = selected_path_or_files
+             display_text = path
+             if os.path.isdir(path):
+                 supported_exts = ('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff')
+                 try:
+                     input_paths = [os.path.join(path, fname) for fname in os.listdir(path) if fname.lower().endswith(supported_exts)]
+                 except OSError as e:
+                     QMessageBox.critical(self, "文件错误", f"无法读取文件夹 '{path}': {e}")
+                     input_paths = [] # Reset paths on error
+             elif os.path.isfile(path):
+                 supported_exts = ('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff')
+                 if path.lower().endswith(supported_exts):
+                      input_paths = [path]
+                 else:
+                      QMessageBox.warning(self, "文件类型错误", "选择的文件不是支持的图像格式。")
+                      input_paths = []
+             else:
+                 QMessageBox.warning(self, "路径无效", "选择的路径不是有效的文件或文件夹。")
+                 input_paths = []
+        else:
+             print("[UI] Invalid selection type received.")
+             input_paths = []
+
+        # Update text edit regardless of image loading success
+        self.input_path_edit.setText(display_text)
+
+        # Normalize paths before loading
+        try:
+            normalized_paths = [os.path.normpath(p) for p in input_paths]
+        except Exception as e:
+             QMessageBox.critical(self, "路径错误", f"规范化输入路径时出错: {e}")
+             normalized_paths = []
+
+        # Load images into viewer
+        if normalized_paths:
+             print(f"[UI] Loading {len(normalized_paths)} images into viewer.")
+             self.image_viewer.load_images(normalized_paths)
+             # Set calibration save dir based on input (if it's a directory)
+             if isinstance(selected_path_or_files, str) and os.path.isdir(selected_path_or_files):
+                  self.image_viewer.set_calibration_save_dir(selected_path_or_files)
+             elif input_paths: # If files selected, maybe use parent dir of first file?
+                  self.image_viewer.set_calibration_save_dir(os.path.dirname(input_paths[0]))
+        else:
+             print("[UI] No valid images found or error occurred, clearing viewer.")
+             self.image_viewer.load_images([]) # Clear viewer
 
     def browse_input(self):
         dialog = QFileDialog(self)
-        dialog.setFileMode(QFileDialog.FileMode.ExistingFiles) # 初始允许选择多个文件
-        # 提供选择文件夹或文件的选项
-        options = QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontResolveSymlinks
-        path = QFileDialog.getExistingDirectory(self, "选择图片文件夹", "", options=options)
-        if path:
-            self.input_path_edit.setText(path)
+        # Start by allowing selection of files or a directory
+        dialog.setFileMode(QFileDialog.FileMode.AnyFile)
+        # Use native dialog for better experience if possible
+        # dialog.setOptions(QFileDialog.Option.DontUseNativeDialog(False)) # This option might not be needed / causes issues
+
+        # Try getting a directory first
+        dir_path = QFileDialog.getExistingDirectory(self, "选择图片文件夹", "", options=QFileDialog.Option.ShowDirsOnly)
+        if dir_path:
+            self._handle_input_path_selection(dir_path)
             return
 
-        # 如果没有选择文件夹，尝试选择文件
+        # If no directory was selected, try getting file(s)
         files, _ = QFileDialog.getOpenFileNames(self, "选择一个或多个图片文件", "",
                                             "图片文件 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff);;所有文件 (*.*)")
         if files:
-            self.input_path_edit.setText(";".join(files))
+            # Handle single or multiple file selection
+            if len(files) == 1:
+                self._handle_input_path_selection(files[0])
+            else:
+                 self._handle_input_path_selection(files)
 
     def browse_output(self):
         path = QFileDialog.getExistingDirectory(self, "选择输出文件夹", "", QFileDialog.Option.ShowDirsOnly)
@@ -738,6 +812,9 @@ class MainWindow(QMainWindow):
         # Add loaded calibration points to the config for the runner
         config['calibration_data'] = self.loaded_calibration_points.copy()
 
+        # Store config used for this run to find results later
+        self.last_run_config = config.copy()
+
         # 创建分析器和线程
         self.analysis_runner = AnalysisRunner(config)
         self.analysis_thread = QThread()
@@ -794,40 +871,51 @@ class MainWindow(QMainWindow):
         # After analysis, regardless of success/fail, re-enable inputs
         self.set_inputs_enabled(True) # Make sure inputs are re-enabled
 
+        self.image_viewer.clear_results() # Clear previous results first
+
         if success:
             QMessageBox.information(self, "完成", message)
             # --- Find result images and inform viewer --- #
-            config = self.get_config() # Get config again to know output dir etc.
-            if config:
-                output_dir = config['output_dir']
-                input_paths = config['input_paths']
-                save_debug = config.get('save_debug_images', False)
+            config = self.last_run_config # Use the config from the actual run
+            if config and 'output_dir' in config:
+                summary_file_path = os.path.join(config['output_dir'], 'analysis_summary.json')
+                if os.path.exists(summary_file_path):
+                    try:
+                        with open(summary_file_path, 'r', encoding='utf-8') as f:
+                            summary_data = json.load(f)
 
-                # Define how result images are named (must match AnalysisRunner logic)
-                # Example: If runner saves as {basename}_result.png
-                for original_path in input_paths:
-                    base_name = os.path.splitext(os.path.basename(original_path))[0]
-                    # Check for the final result image (e.g., density plot or marked image)
-                    # This depends on the specific output of AnalysisRunner
-                    potential_result_names = [
-                        f"{base_name}_density_map.png",
-                        f"{base_name}_analysis.png", # If density isn't calculated
-                        # Add other possible result names based on runner logic
-                    ]
-                    found_result_path = None
-                    for name in potential_result_names:
-                        result_path = os.path.join(output_dir, name)
-                        if os.path.exists(result_path):
-                            found_result_path = result_path
-                            break # Found the most likely result
+                        if "image_results" in summary_data and isinstance(summary_data["image_results"], list):
+                            logging.info(f"从摘要加载 {len(summary_data['image_results'])} 个结果图像路径...")
+                            found_any_results = False
+                            for image_result in summary_data["image_results"]:
+                                original_path = image_result.get('original_path')
+                                result_image_path = image_result.get('result_image_path')
+                                if original_path and result_image_path:
+                                     # Make sure the path from JSON is absolute or resolve it
+                                     if not os.path.isabs(result_image_path):
+                                          result_image_path = os.path.abspath(os.path.join(config['output_dir'], result_image_path))
 
-                    if found_result_path:
-                         self.image_viewer.set_result_image_path(original_path, found_result_path)
-                    else:
-                         self.image_viewer.set_result_image_path(original_path, None)
-                         logging.warning(f"未能在输出目录找到 {base_name} 的预期结果图像。")
+                                     if os.path.exists(result_image_path):
+                                         self.image_viewer.set_result_image_path(original_path, result_image_path)
+                                         found_any_results = True
+                                     else:
+                                         logging.warning(f"摘要中指定的结果图像不存在: {result_image_path}")
+                                         self.image_viewer.set_result_image_path(original_path, None)
+                                else:
+                                     logging.warning(f"摘要条目缺少 original_path 或 result_image_path: {image_result}")
+                            if not found_any_results:
+                                 logging.warning("摘要文件中未找到有效的可显示结果图像路径。")
+                        else:
+                             logging.error(f"分析摘要文件 '{summary_file_path}' 格式无效或缺少 'image_results' 列表。")
+
+                    except json.JSONDecodeError as e:
+                         logging.error(f"无法解析分析摘要文件 '{summary_file_path}': {e}")
+                    except Exception as e:
+                         logging.error(f"加载或处理分析摘要时出错: {e}")
+                else:
+                     logging.warning(f"未找到预期的分析摘要文件: {summary_file_path}")
             else:
-                logging.error("无法在分析完成后重新获取配置以查找结果图像。")
+                logging.error("无法获取上次运行的配置或输出目录以加载结果摘要。")
         else:
             QMessageBox.critical(self, "错误", message)
 

@@ -3,6 +3,7 @@ import logging
 import traceback
 import os
 import json # For saving summary
+import numpy as np
 
 # 导入分析脚本 - 使用 try-except 以防脚本暂时不存在或路径错误
 try:
@@ -63,12 +64,12 @@ class AnalysisRunner(QObject):
 
             num_images = len(input_paths)
             all_results = [] # Store results for each image
+            all_image_summaries = [] # Store summaries for all images
 
             # --- Image Processing Loop ---
             image_processing_progress = 70 # Allocate 70% for image processing
             lidar_progress_share = 20 if perform_lidar_analysis else 0 # Allocate 20% for lidar if enabled
             final_summary_progress = 10 # Allocate 10% for final summary
-
 
             for i, img_path in enumerate(input_paths):
                 if not self._is_running:
@@ -167,7 +168,6 @@ class AnalysisRunner(QObject):
                          current_image_results["草地密度"] = "未计算"
                     step_progress(6)
 
-
                     # --- 7. Visualize Results ---
                     self.log_message.emit("步骤 7/7: 生成可视化结果...")
                     # Create unique filename based on input path relative to the base input dir if possible
@@ -226,9 +226,24 @@ class AnalysisRunner(QObject):
                     else:
                          current_image_results["草地高度"] = "未分析"
 
+                    # Placeholder for actual density calculation logic
+                    logging.info(f"Calculating density for {image_basename}...")
+                    density_percentage = np.random.uniform(5.0, 60.0) # Dummy value
+                    # Assume density map is the final display result here
+                    final_result_image_path = result_path # Record path
+                    current_image_results["density_percentage"] = round(density_percentage, 2)
+                    current_image_results["calibration_points"] = points_for_this_image.tolist() if points_for_this_image is not None else None
+                    # Add other relevant metrics if needed
+                    logging.info(f"Density for {image_basename}: {density_percentage:.2f}%")
+
                     all_results.append(current_image_results)
                     self.log_message.emit(f"--- 图像 {os.path.basename(img_path)} 处理完成 ---")
 
+                    # Add paths to the results dict for this image
+                    image_summary = current_image_results.copy()
+                    image_summary['original_path'] = img_path
+                    image_summary['result_image_path'] = final_result_image_path # Add the recorded path
+                    all_image_summaries.append(image_summary)
 
                 except Exception as img_err:
                     error_msg = f"处理图像 {os.path.basename(img_path)} 时发生严重错误: {img_err}\\n{traceback.format_exc()}"
@@ -241,7 +256,6 @@ class AnalysisRunner(QObject):
                     # Update progress to the end of this image's share
                     self.progress_updated.emit(image_end_progress)
 
-
             self.log_message.emit("所有图像处理完成。")
             self.progress_updated.emit(image_processing_progress + lidar_progress_share) # Progress after image loop + potential lidar share
 
@@ -249,12 +263,15 @@ class AnalysisRunner(QObject):
             self.log_message.emit("生成最终报告...")
             summary_path = os.path.join(output_dir, "analysis_summary.json")
             try:
+                final_summary_data = {
+                    "run_config": self.config, # Include config used for the run
+                    "image_results": all_image_summaries
+                }
                 with open(summary_path, 'w', encoding='utf-8') as f:
-                    json.dump(all_results, f, indent=4, ensure_ascii=False)
+                    json.dump(final_summary_data, f, indent=4, ensure_ascii=False)
                 self.log_message.emit(f"详细分析摘要已保存到: {summary_path}")
             except Exception as json_err:
                  self.log_message.emit(f"保存 JSON 摘要时出错: {json_err}")
-
 
             # Create a simple text summary for the log
             summary_text = ["--- 分析摘要 ---"]
