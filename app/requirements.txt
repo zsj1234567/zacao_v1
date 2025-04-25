@@ -1,0 +1,8 @@
+PyQt6
+# 添加脚本可能需要的其他依赖项
+# 例如：numpy, opencv-python, matplotlib, scikit-learn
+# 建议根据实际导入情况添加
+numpy
+opencv-python
+matplotlib
+scikit-learn 
