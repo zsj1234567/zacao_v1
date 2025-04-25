@@ -638,15 +638,12 @@ class GrassAnalyzer:
         raise ValueError(f"不支持的密度计算方法: {method}")
 
     def visualize_results(self, save_path=None, layout='default', save_debug=False, calculate_density=True):
-        """
-        可视化分析结果
+        """可视化分析结果，包括原始图像、掩码、实例和密度信息，并选择性保存"""
+        print(f"[Visualize] 开始生成结果图，目标路径: {save_path}, 布局: {layout}") # 添加开始日志
 
-        参数:
-            save_path: 结果保存路径，如果为None则使用默认路径
-            layout: 布局样式，'default'为3x2布局，'simple'为1x3简化布局
-            save_debug: 是否保存调试图像
-            calculate_density: 是否计算和显示密度信息
-        """
+        if self.original_image is None:
+            raise ValueError("请先加载图像")
+
         if self.calibrated_image is None or not hasattr(self, 'hsv_mask') or self.hsv_mask is None:
             raise ValueError("请先完成图像校准和草的分割")
 
@@ -820,21 +817,21 @@ class GrassAnalyzer:
             os.makedirs('results', exist_ok=True)
 
         # 保存结果
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"结果已保存到 {save_path}")
+        try:
+            # 保存合并后的图形
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            plt.close(fig)  # 关闭图形，释放内存
+            print(f"[Visualize] 结果图像已成功保存到: {save_path}") # 添加成功日志
+            return save_path
+        except Exception as e:
+            print(f"[Visualize] 保存合并结果图像时出错: {e}")
+            plt.close(fig) # 确保即使出错也关闭图形
+            return None
 
-        # 保存调试图像
-        if save_debug and self.debug_images:
-            debug_dir = os.path.dirname(save_path)
-            base_name = os.path.basename(save_path).split('.')[0]
-            for name, img in self.debug_images.items():
-                debug_path = os.path.join(debug_dir, f"{base_name}_{name}.png")
-                if len(img.shape) == 2 or img.shape[2] == 1:  # 灰度图像
-                    plt.imsave(debug_path, img, cmap='gray')
-                else:  # 彩色图像
-                    plt.imsave(debug_path, img)
-
-        plt.close()
+    def _save_debug_image(self, key, image_data, output_dir, base_filename):
+        """Helper function to save individual debug images."""
+        if image_data is None:
+            return
 
 def main():
     # 创建草地分析器实例

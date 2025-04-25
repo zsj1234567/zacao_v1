@@ -5,7 +5,7 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QMainWindow, QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QFileDialog, QProgressBar, QTextEdit, QComboBox,
-    QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox, QMessageBox, QSizePolicy, QStyleFactory
+    QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox, QMessageBox, QSizePolicy, QStyleFactory, QSplitter
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPalette, QColor, QFont
@@ -56,14 +56,23 @@ class MainWindow(QMainWindow):
         # --- 主布局 ---
         self.main_widget = QWidget()
         self.setCentralWidget(self.main_widget)
-        self.main_h_layout = QHBoxLayout(self.main_widget)
+
+        # Use a top-level layout for the main widget to hold the splitter
+        top_level_layout = QHBoxLayout(self.main_widget)
+        top_level_layout.setContentsMargins(5, 5, 5, 5) # Add some margin around the splitters
+        top_level_layout.setSpacing(0)
+
+        # --- Main Horizontal Splitter --- #
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        top_level_layout.addWidget(self.main_splitter)
 
         # --- 左侧: 配置面板 ---
         self.config_widget = QWidget()
         self.config_layout = QVBoxLayout(self.config_widget)
         self.config_layout.setSpacing(15)
         self.config_layout.setContentsMargins(0, 0, 0, 0) # 移除边距，由父布局控制
-        self.main_h_layout.addWidget(self.config_widget, 1) # 配置面板占1份
+        # Add config widget to the main splitter
+        self.main_splitter.addWidget(self.config_widget)
 
         # --- 顶部: 输入和输出选择 ---
         io_group = QGroupBox("输入与输出")
@@ -297,7 +306,34 @@ class MainWindow(QMainWindow):
 
         # --- 右侧: 可视化窗口 ---
         self.image_viewer = ImageViewerWidget()
-        self.main_h_layout.addWidget(self.image_viewer, 2) # 可视化窗口占2份
+
+        # --- Viewer Splitter (contains preview list and main viewer panel) --- #
+        self.viewer_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.viewer_splitter.addWidget(self.image_viewer.get_preview_list_widget())
+        self.viewer_splitter.addWidget(self.image_viewer.get_viewer_panel_widget())
+
+        # Add the viewer splitter to the main splitter
+        self.main_splitter.addWidget(self.viewer_splitter)
+
+        # --- Set Initial Splitter Sizes --- #
+        # Adjust these ratios as needed
+        total_width = self.width() # Or a default estimate like 1200
+        config_width = int(total_width * 0.25) # Config panel takes ~25%
+        viewer_width = total_width - config_width
+        preview_width = self.image_viewer.get_preview_list_widget().width() # Use its fixed width
+        graphics_view_width = viewer_width - preview_width
+
+        self.main_splitter.setSizes([config_width, viewer_width])
+        self.viewer_splitter.setSizes([preview_width, graphics_view_width])
+
+        # Optional: Set stretch factors (less precise than setSizes for initial state)
+        # self.main_splitter.setStretchFactor(0, 1) # Config panel
+        # self.main_splitter.setStretchFactor(1, 3) # Viewer area
+        # self.viewer_splitter.setStretchFactor(0, 1) # Preview list
+        # self.viewer_splitter.setStretchFactor(1, 4) # Main view
+
+        # Hide config panel if size becomes very small (optional)
+        # self.main_splitter.splitterMoved.connect(self.handle_splitter_move)
 
         # 连接日志信号
         self.log_signal.connect(self.append_log)
@@ -918,6 +954,24 @@ class MainWindow(QMainWindow):
                 logging.error("无法获取上次运行的配置或输出目录以加载结果摘要。")
         else:
             QMessageBox.critical(self, "错误", message)
+
+        # --- BEGIN Bug Fix 1: Refresh viewer after analysis ---
+        # Ensure the correct view mode button is checked
+        self.image_viewer.view_original_button.setChecked(True)
+
+        # Reload the currently selected image in the preview list
+        current_item = self.image_viewer.preview_list.currentItem()
+        if current_item:
+            current_path = current_item.data(Qt.ItemDataRole.UserRole)
+            if current_path:
+                logging.info(f"分析完成，重新加载当前图像: {os.path.basename(current_path)}")
+                # Force display, potentially resetting view mode handled internally
+                self.image_viewer.display_image(current_path)
+            else:
+                logging.warning("分析完成，但无法从当前预览项获取路径。")
+        else:
+            logging.info("分析完成，预览列表中没有选定项。")
+        # --- END Bug Fix 1 ---
 
         # Ensure viewer widget itself is enabled
         self.image_viewer.setEnabled(True)
