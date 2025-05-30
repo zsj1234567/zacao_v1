@@ -705,6 +705,20 @@ class MainWindow(QMainWindow):
         logging.info(f"获取到的配置: {config}")
         return config
 
+    def get_calibration_file_path(self, image_path):
+        """
+        获取给定图像对应的校准文件路径
+        将校准文件保存在图片所在目录下的 calibrations 文件夹中
+        """
+        # 获取图片所在目录
+        image_dir = os.path.dirname(image_path)
+        # 在图片目录下创建 calibrations 文件夹
+        calib_dir = os.path.join(image_dir, 'calibrations')
+        os.makedirs(calib_dir, exist_ok=True)
+            
+        img_basename = os.path.splitext(os.path.basename(image_path))[0]
+        return os.path.join(calib_dir, f"{img_basename}.json")
+
     def start_analysis(self):
         config = self.get_config()
         if config is None:
@@ -716,9 +730,6 @@ class MainWindow(QMainWindow):
         self.log_edit.clear() # Clear previous logs
         self.progress_bar.setValue(0)
 
-        # --- 移除：不再在这里提前加载图像 ---
-        # self.image_viewer.load_images(config['input_path'])
-
         if self.analysis_thread and self.analysis_thread.isRunning():
             QMessageBox.warning(self, "正在运行", "分析任务已在运行中。")
             return
@@ -729,120 +740,90 @@ class MainWindow(QMainWindow):
         do_calib = config.get('do_calibration', False)
         calib_path_input = config.get('calibration_path')
 
-        # --- FIX: Ensure input_image_paths is always a list --- #
+        # --- 确保输入路径列表的处理 --- #
         potential_paths = config['input_path']
         actual_image_paths_list = []
         if isinstance(potential_paths, str):
-             # If it's a single file path string from the input box
-             if os.path.isfile(potential_paths):
-                  actual_image_paths_list = [potential_paths]
-             elif os.path.isdir(potential_paths):
-                  # If it's a directory path string, get image files from it
-                  supported_exts = ('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff')
-                  try:
-                      all_files = os.listdir(potential_paths)
-                      actual_image_paths_list = [os.path.join(potential_paths, fname) for fname in all_files if fname.lower().endswith(supported_exts)]
-                  except OSError as e:
-                      QMessageBox.critical(self, "文件错误", f"无法读取输入文件夹 '{potential_paths}' 进行校准检查: {e}")
-                      # Keep actual_image_paths_list empty
-             else:
-                  # Invalid path in input box
-                  QMessageBox.warning(self, "路径无效", f"输入框中的路径无效: {potential_paths}")
-                  # Keep actual_image_paths_list empty
+            if os.path.isfile(potential_paths):
+                actual_image_paths_list = [potential_paths]
+            elif os.path.isdir(potential_paths):
+                supported_exts = ('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff')
+                try:
+                    all_files = os.listdir(potential_paths)
+                    actual_image_paths_list = sorted([
+                        os.path.join(potential_paths, fname) 
+                        for fname in all_files 
+                        if fname.lower().endswith(supported_exts)
+                    ])
+                except OSError as e:
+                    QMessageBox.critical(self, "文件错误", f"无法读取输入文件夹 '{potential_paths}' 进行校准检查: {e}")
+            else:
+                QMessageBox.warning(self, "路径无效", f"输入框中的路径无效: {potential_paths}")
         elif isinstance(potential_paths, list):
-             # If it's already a list (likely from multi-file selection via browse)
-             actual_image_paths_list = potential_paths
+            actual_image_paths_list = sorted(potential_paths)
         else:
-             logging.error(f"配置中的 input_path 类型未知: {type(potential_paths)}。无法检查校准。")
-             # Keep actual_image_paths_list empty
+            logging.error(f"配置中的 input_path 类型未知: {type(potential_paths)}。无法检查校准。")
 
-        # --- Update config: Replace 'input_path' with 'input_paths' (list) --- #
         if not actual_image_paths_list:
-             QMessageBox.warning(self, "无有效图像", "未找到有效的输入图像文件。")
-             self.set_inputs_enabled(True) # Re-enable inputs if no images
-             return
+            QMessageBox.warning(self, "无有效图像", "未找到有效的输入图像文件。")
+            self.set_inputs_enabled(True)
+            return
 
-        config['input_paths'] = actual_image_paths_list # Add the list with the correct key
-        if 'input_path' in config: # Ensure the key exists before deleting
-            del config['input_path'] # Remove the old singular key
-        # --- End Update --- #
+        config['input_paths'] = actual_image_paths_list
+        if 'input_path' in config:
+            del config['input_path']
 
-        # --- FIX 2: Store config BEFORE calibration check --- #
         self.last_run_config = config.copy()
-        # --- END FIX 2 ---
 
-        # --- Calibration Handling (now uses config['input_paths']) ---
+        # --- 优化校准文件处理 ---
         if do_calib:
             logging.info("检查校准文件...")
-            # Determine the directory to search/save calibrations
-            calib_dir_to_use = None
-            if calib_path_input:
-                if os.path.isdir(calib_path_input):
-                    calib_dir_to_use = calib_path_input
-                elif os.path.isfile(calib_path_input):
-                    # If a file is given, use its directory
-                    calib_dir_to_use = os.path.dirname(calib_path_input)
-                else:
-                     logging.warning(f"提供的校准路径无效: {calib_path_input}")
-
-            if not calib_dir_to_use:
-                 calib_dir_to_use = os.path.join(os.path.dirname(config['output_dir']), 'calibrations') # Default near output
-                 logging.info(f"未提供有效校准目录，将使用默认位置: {calib_dir_to_use}")
-                 os.makedirs(calib_dir_to_use, exist_ok=True)
-
-            self.effective_calibration_dir = calib_dir_to_use # Store for saving later
-            self.image_viewer.set_calibration_save_dir(self.effective_calibration_dir)
-
+            
+            # 检查每个图像的校准状态
             for img_path in actual_image_paths_list:
-                 img_basename = os.path.splitext(os.path.basename(img_path))[0]
-                 expected_json_path = os.path.join(self.effective_calibration_dir, f"{img_basename}.json")
+                calib_file = self.get_calibration_file_path(img_path)
+                if os.path.exists(calib_file):
+                    try:
+                        with open(calib_file, 'r') as f:
+                            points = json.load(f)
+                            if isinstance(points, list) and len(points) == 4:
+                                self.loaded_calibration_points[img_path] = points
+                                logging.info(f"已加载校准点 ({os.path.basename(img_path)}): {points}")
+                            else:
+                                logging.warning(f"校准文件 {os.path.basename(calib_file)} 格式无效")
+                                self.pending_calibrations.append(img_path)
+                    except Exception as e:
+                        logging.error(f"加载校准文件 {os.path.basename(calib_file)} 出错: {e}")
+                        self.pending_calibrations.append(img_path)
+                else:
+                    logging.info(f"图像 {os.path.basename(img_path)} 需要校准")
+                    self.pending_calibrations.append(img_path)
 
-                 if os.path.exists(expected_json_path):
-                     try:
-                         with open(expected_json_path, 'r') as f:
-                             points = json.load(f)
-                             if isinstance(points, list) and len(points) == 4:
-                                 self.loaded_calibration_points[img_path] = points
-                                 logging.info(f"为 {os.path.basename(img_path)} 加载校准点: {points}")
-                             else:
-                                 logging.warning(f"校准文件 {expected_json_path} 格式无效，需要手动校准。")
-                                 self.pending_calibrations.append(img_path)
-                     except Exception as e:
-                         logging.error(f"加载校准文件 {expected_json_path} 时出错: {e}，需要手动校准。")
-                         self.pending_calibrations.append(img_path)
-                 else:
-                      logging.info(f"未找到校准文件 {expected_json_path}，需要手动校准。")
-                      self.pending_calibrations.append(img_path)
-
-            # --- Trigger Manual Calibration if Needed ---
             if self.pending_calibrations:
-                logging.info(f"需要手动校准 {len(self.pending_calibrations)} 张图像。")
-                self.start_button.setEnabled(False) # Keep start disabled
-                self.set_inputs_enabled(False) # Keep inputs disabled
-
-                # --- 修改：在进入校准模式前加载图像列表 --- #
+                self.start_button.setEnabled(False)
+                self.set_inputs_enabled(False)
+                
+                # 加载所有图像到查看器
                 self.image_viewer.load_images(actual_image_paths_list)
-                # --- 结束修改 ---
+                
+                total_pending = len(self.pending_calibrations)
+                QMessageBox.information(
+                    self, 
+                    "需要校准",
+                    f"需要为 {total_pending} 张图像进行校准。\n"
+                    f"请在右侧窗口为每张图像选择1平方米区域的4个角点。\n"
+                    f'完成后点击"保存校准"按钮。'
+                )
+                
+                # 开始第一张图片的校准
+                first_image = self.pending_calibrations[0]
+                # 设置校准保存目录为图片所在目录
+                self.image_viewer.set_calibration_save_dir(os.path.dirname(first_image))
+                self.image_viewer._set_view_mode(1, target_image_path=first_image)
+                return
 
-                QMessageBox.information(self, "需要校准",
-                                        f"请在右侧窗口为 {len(self.pending_calibrations)} 张图像选择1平方米区域的4个角点。\n" +
-                                        '完成后点击"保存校准"按钮。')
-                # Start calibration for the first image
-                first_image_to_calibrate = self.pending_calibrations[0]
-                self.image_viewer._set_view_mode(1, target_image_path=first_image_to_calibrate)
-                return # Stop here, wait for on_calibration_saved signal
-            else:
-                 logging.info("所有图像均找到有效校准文件或不需要校准。")
-
-        else: # Not doing calibration
-             logging.info("跳过校准步骤。")
-
-        # --- If we reach here, either calibration is done/skipped --- 
-        # --- 修改：在这里加载图像（如果未进行校准）---
-        if not do_calib:
-             self.image_viewer.load_images(actual_image_paths_list)
-        # --- 结束修改 ---
-        # --- FIX 2: Pass the potentially modified config (self.last_run_config) ---
+        # 如果不需要校准或所有校准已完成
+        self.image_viewer.load_images(actual_image_paths_list)
         self._proceed_with_analysis(self.last_run_config)
 
     def _proceed_with_analysis(self, config):
@@ -1028,36 +1009,61 @@ class MainWindow(QMainWindow):
         self.browse_calibration_button.setEnabled(enabled)
 
     def on_calibration_saved(self, image_path, points):
-        """当用户在 ImageViewer 中保存校准点时调用"""
-        logging.info(f"收到来自查看器的校准点: {image_path} -> {points}")
-        if image_path in self.pending_calibrations:
+        """处理校准点保存事件"""
+        if not image_path or image_path not in self.pending_calibrations:
+            logging.warning(f"收到未知图像的校准保存请求: {image_path}")
+            return
+
+        try:
+            # 保存校准点到文件
+            calib_file = self.get_calibration_file_path(image_path)
+            os.makedirs(os.path.dirname(calib_file), exist_ok=True)
+            with open(calib_file, 'w') as f:
+                json.dump(points, f)
+            logging.info(f"已保存校准点到: {os.path.basename(calib_file)}")
+            
+            # 更新内存中的校准点
             self.loaded_calibration_points[image_path] = points
             self.pending_calibrations.remove(image_path)
-
+            
+            # 通知用户校准已保存
+            QMessageBox.information(self, "校准已保存", f"{os.path.basename(image_path)} 的校准点已保存。")
+            
             if not self.pending_calibrations:
-                # All calibrations are done!
-                logging.info("所有手动校准完成，准备开始分析...")
-                QMessageBox.information(self, "校准完成", "所有必需的校准已完成，即将开始分析。")
-                self.image_viewer.exit_calibration_mode() # Add this method to viewer
-                # --- FIX 2: Use the stored config instead of calling get_config again --- #
-                if self.last_run_config: # Check if config was stored
-                    # Add the newly saved calibration points to the stored config
-                    # self.last_run_config['calibration_data'][image_path] = points # Already done via self.loaded_calibration_points
+                # 所有校准完成
+                logging.info("所有图像校准完成")
+                QMessageBox.information(self, "校准完成", "所有图像校准已完成，即将开始分析。")
+                self.image_viewer.exit_calibration_mode()
+                
+                if self.last_run_config:
                     self._proceed_with_analysis(self.last_run_config)
                 else:
-                     QMessageBox.critical(self, "错误", "无法在校准后找到原始配置，分析取消。")
-                     logging.error("校准后 self.last_run_config 为空！")
-                     self.set_inputs_enabled(True) # Re-enable inputs
-                     self.start_button.setEnabled(True)
-                # --- END FIX 2 ---
+                    QMessageBox.critical(self, "错误", "无法在校准后找到原始配置，分析取消。")
+                    logging.error("校准后配置丢失")
+                    self.set_inputs_enabled(True)
+                    self.start_button.setEnabled(True)
             else:
-                # Trigger calibration for the next image
+                # 继续下一张图片的校准
                 next_image = self.pending_calibrations[0]
-                logging.info(f"下一个需要校准的图像: {os.path.basename(next_image)}")
-                QMessageBox.information(self, "继续校准", f"请为下一个图像校准： {os.path.basename(next_image)}")
+                remaining = len(self.pending_calibrations)
+                total = len(self.loaded_calibration_points) + remaining
+                
+                # 更新校准保存目录为下一张图片所在目录
+                self.image_viewer.set_calibration_save_dir(os.path.dirname(next_image))
+                
+                QMessageBox.information(
+                    self, 
+                    "继续校准", 
+                    f"已完成 {total - remaining}/{total} 张图像的校准\n"
+                    f"请继续校准: {os.path.basename(next_image)}"
+                )
+                
+                # 确保下一张图片被正确加载
                 self.image_viewer._set_view_mode(1, target_image_path=next_image)
-        else:
-             logging.warning(f"收到未知图像的校准保存请求: {image_path}")
+                
+        except Exception as e:
+            logging.error(f"保存校准点时出错: {e}")
+            QMessageBox.critical(self, "保存失败", f"保存校准点时出错: {e}")
 
     def closeEvent(self, event):
         """关闭窗口前检查是否有正在运行的分析"""
@@ -1075,6 +1081,19 @@ class MainWindow(QMainWindow):
                 event.ignore()
         else:
             event.accept()
+
+    def _set_view_mode(self, mode_id: int, target_image_path: Optional[str] = None):
+        """
+        设置当前视图模式
+        mode_id: 0=原始, 1=校准, 2=结果
+        target_image_path: 可选，指定要显示的图像路径
+        """
+        if mode_id == 1 and target_image_path:
+            # 进入校准模式并指定了目标图片
+            self.image_viewer._set_view_mode(mode_id, target_image_path=target_image_path)
+        else:
+            # 其他模式切换
+            self.image_viewer._set_view_mode(mode_id)
 
 # # --- 用于测试 --- #
 # if __name__ == '__main__':

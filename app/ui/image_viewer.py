@@ -232,6 +232,12 @@ class ImageViewerWidget(QWidget):
            假定调用此函数时，视图模式已经是 'calibration'。
         """
         logging.info(f"[Viewer _enter_calibration_logic] Entering logic for: {os.path.basename(image_path)}")
+        
+        # 确保图片存在
+        if not os.path.exists(image_path):
+            logging.error(f"[Viewer] 校准目标图片不存在: {image_path}")
+            QMessageBox.critical(self, "错误", f"无法找到图片: {os.path.basename(image_path)}")
+            return False
 
         # Check if target image is the current context
         is_already_current = (image_path == self.current_image_path)
@@ -241,32 +247,31 @@ class ImageViewerWidget(QWidget):
         if not is_already_current:
             # If it's a new image, load it (display_image handles setting self.current_image_path)
             logging.info(f"[Viewer _enter_calibration_logic] Calibration target '{os.path.basename(image_path)}' is not current. Loading original...")
-            # Call display_image which uses _load_and_display_base_image
-            self.display_image(image_path)
-            # Check if display_image was successful (it calls _load_and_display_base_image)
-            load_success = (self.current_image_path == image_path and self.current_pixmap_item is not None)
-
+            # 尝试直接加载图片
+            load_success = self._load_and_display_base_image(image_path)
             if load_success:
-                 # Select the item in the preview list without triggering selection signal again
-                 for i in range(self.preview_list.count()):
-                      item = self.preview_list.item(i)
-                      if item and item.data(Qt.ItemDataRole.UserRole) == image_path:
-                           self.preview_list.blockSignals(True)
-                           self.preview_list.setCurrentItem(item)
-                           self.preview_list.blockSignals(False)
-                           break
+                self.current_image_path = image_path
+                
+                # Select the item in the preview list without triggering selection signal again
+                for i in range(self.preview_list.count()):
+                    item = self.preview_list.item(i)
+                    if item and item.data(Qt.ItemDataRole.UserRole) == image_path:
+                        self.preview_list.blockSignals(True)
+                        self.preview_list.setCurrentItem(item)
+                        self.preview_list.blockSignals(False)
+                        break
             else:
-                 logging.error(f"[Viewer] Failed to load image {image_path} for calibration.")
-                 QMessageBox.warning(self, "加载错误", f"无法加载用于校准的图像:\n{os.path.basename(image_path)}")
-                 return
+                logging.error(f"[Viewer] Failed to load image {image_path} for calibration.")
+                QMessageBox.warning(self, "加载错误", f"无法加载用于校准的图像:\n{os.path.basename(image_path)}")
+                return False
         elif not self.current_pixmap_item or not self.current_pixmap_item.scene():
             # If it *was* the current image, but pixmap/scene is missing, try reloading.
             logging.warning(f"[Viewer _enter_calibration_logic] Calibration target '{os.path.basename(image_path)}' is current, but pixmap/scene missing. Reloading original...")
             load_success = self._load_and_display_base_image(image_path)
             if not load_success:
-                 logging.error(f"[Viewer] Failed to reload current image {image_path} for calibration.")
-                 QMessageBox.warning(self, "加载错误", f"无法重新加载当前图像以进行校准:\n{os.path.basename(image_path)}")
-                 return
+                logging.error(f"[Viewer] Failed to reload current image {image_path} for calibration.")
+                QMessageBox.warning(self, "加载错误", f"无法重新加载当前图像以进行校准:\n{os.path.basename(image_path)}")
+                return False
         else:
             # Image is current and pixmap/scene seems okay
             logging.debug(f"[Viewer _enter_calibration_logic] Calibration target '{os.path.basename(image_path)}' is current and seems loaded.")
@@ -296,6 +301,7 @@ class ImageViewerWidget(QWidget):
             # Draw points (this relies on the pixmap item being correctly set)
             self._redraw_calibration_points()
             logging.info(f"[Viewer _enter_calibration_logic] Calibration mode successfully entered for: {os.path.basename(image_path)}")
+            return True
 
         else:
             # This case should ideally not be reached if the logic above is correct
@@ -308,6 +314,7 @@ class ImageViewerWidget(QWidget):
             self.graphics_view.viewport().setCursor(Qt.CursorShape.ArrowCursor)
             # Try to revert to original view
             self._set_view_mode(0)
+            return False
 
     def _on_preview_selected(self, current_item, previous_item):
         """处理预览列表中的选择更改"""
@@ -352,6 +359,11 @@ class ImageViewerWidget(QWidget):
         """根据按钮点击设置视图模式。 0: original, 1: calibration, 2: result"""
         # Determine the effective image path for context (if needed)
         effective_image_path = target_image_path if target_image_path else self.current_image_path
+        
+        # 如果提供了目标图片路径，先确保它在图片列表中
+        if target_image_path and target_image_path not in self.image_paths:
+            logging.info(f"[Viewer] 添加目标图片到图片列表: {os.path.basename(target_image_path)}")
+            self.image_paths.append(target_image_path)
 
         # Allow switching to original even if no image path exists
         if not effective_image_path and mode_id != 0:
@@ -439,10 +451,23 @@ class ImageViewerWidget(QWidget):
                 self._set_view_mode(0)
                 return
 
+            # 确保目标图片存在
+            if not os.path.exists(path_to_calibrate):
+                logging.error(f"[Viewer] 校准目标图片不存在: {path_to_calibrate}")
+                QMessageBox.critical(self, "错误", f"无法找到图片: {os.path.basename(path_to_calibrate)}")
+                return
+
             # Set UI state for calibration *before* calling the logic function
             self.current_view_mode = 'calibration'
             self.view_calibration_button.setChecked(True)
             self._populate_preview_list('original') # Calibration view uses original previews
+
+            # 确保当前图片在预览列表中被选中
+            for i in range(self.preview_list.count()):
+                item = self.preview_list.item(i)
+                if item and item.data(Qt.ItemDataRole.UserRole) == path_to_calibrate:
+                    self.preview_list.setCurrentRow(i)
+                    break
 
             # Call the function that handles the actual calibration entry logic
             self._enter_calibration_logic(path_to_calibrate)
@@ -714,38 +739,14 @@ class ImageViewerWidget(QWidget):
             # Save to loaded points dict as well
             self.loaded_calibration_points[self.current_image_path] = self.calibration_points
 
+            # 确保点是整数
+            int_points = [[int(round(p[0])), int(round(p[1]))] for p in self.calibration_points]
+            
             # 发出信号，传递图像路径和点列表
-            self.calibration_save_requested.emit(self.current_image_path, self.calibration_points)
-
-            # 同时将校准点保存到 JSON 文件
-            save_path = None # Initialize save_path
-            if self.calibration_save_dir:
-                img_basename = os.path.splitext(os.path.basename(self.current_image_path))[0]
-                save_path = os.path.join(self.calibration_save_dir, f"{img_basename}.json")
-                try:
-                    # 确保点是整数
-                    int_points = [[int(round(p[0])), int(round(p[1]))] for p in self.calibration_points]
-                    # 顺时针排序 (可选但推荐)
-                    # ordered_points = self._order_points_clockwise(int_points)
-                    ordered_points = int_points # Assuming points are added somewhat clockwise
-
-                    with open(save_path, 'w') as f:
-                        json.dump(ordered_points, f, indent=4) # Use indent for readability
-                    logging.info(f"校准文件已保存到: {save_path}")
-                    save_successful = True
-                except Exception as e:
-                    logging.error(f"[Viewer] Error saving calibration file {save_path}: {e}")
-                    QMessageBox.critical(self, "保存错误", f"无法保存校准文件到 {save_path}:\n{e}")
-                    save_successful = False
-            else:
-                logging.error("[Viewer] Error: Calibration save directory not set.")
-                QMessageBox.warning(self, "保存错误", "未设置校准文件保存目录。")
-                save_successful = False
-
-            # 只有在保存成功后才退出校准模式
-            if save_successful:
-                self.exit_calibration_mode() # Use the dedicated exit function
-                QMessageBox.information(self, "校准已保存", f"{os.path.basename(self.current_image_path)} 的校准点已保存。")
+            self.calibration_save_requested.emit(self.current_image_path, int_points)
+            
+            # 不再在这里直接保存文件，由MainWindow统一处理
+            # 校准模式的退出由MainWindow在处理完保存后调用exit_calibration_mode方法
 
         elif self.is_calibration_mode:
             logging.info("[Viewer] Error: Need exactly 4 points to save calibration.")
@@ -870,33 +871,48 @@ class ImageViewerWidget(QWidget):
 
     # --- Bug Fix 2: Add wheelEvent for zooming --- #
     def wheelEvent(self, event):
-        # Allow zooming only in original or result view, not calibration
+        """处理鼠标滚轮事件，实现以鼠标位置为中心点的图像缩放"""
+        # 在校准模式下不允许缩放
         if self.is_calibration_mode:
-            super().wheelEvent(event) # Pass event up if in calibration
+            super().wheelEvent(event)
             return
 
-        # Zoom Factor
-        zoom_in_factor = 1.15
-        zoom_out_factor = 1 / zoom_in_factor
-
-        # Check if an image is loaded
+        # 检查是否有图像加载
         if self.current_pixmap_item is None:
             super().wheelEvent(event)
             return
 
-        # Set Anchors
+        # 设置变换锚点为鼠标位置
         self.graphics_view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.graphics_view.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
 
-        # Zoom
+        # 缩放因子
+        zoom_factor = 1.15  # 15% 缩放步长
+        
+        # 获取当前视图的变换矩阵
+        old_pos = self.graphics_view.mapToScene(event.position().toPoint())
+        
+        # 根据滚轮方向确定缩放方向
         angle = event.angleDelta().y()
         if angle > 0:
-            self.graphics_view.scale(zoom_in_factor, zoom_in_factor)
+            # 放大
+            scale_factor = zoom_factor
         else:
-            self.graphics_view.scale(zoom_out_factor, zoom_out_factor)
-
-        # Don't pass the event up, we handled it
-        # super().wheelEvent(event)
+            # 缩小
+            scale_factor = 1.0 / zoom_factor
+            
+        # 应用缩放
+        self.graphics_view.scale(scale_factor, scale_factor)
+        
+        # 获取缩放后的位置
+        new_pos = self.graphics_view.mapToScene(event.position().toPoint())
+        
+        # 计算位置差，并调整视图以保持鼠标位置不变
+        delta = new_pos - old_pos
+        self.graphics_view.translate(delta.x(), delta.y())
+        
+        # 更新视图
+        self.graphics_view.viewport().update()
         # --- End Bug Fix 2 ---
 
 # Example usage (for testing)
