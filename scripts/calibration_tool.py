@@ -139,10 +139,25 @@ def click_event(event, x, y, flags, param):
             # 添加点
             points.append((original_x, original_y))
 
-            # 让点和线的大小与显示比例无关，始终保持视觉一致
-            fixed_point_radius = 5  # 你可以根据需要调整
-            fixed_border_radius = 7
-            fixed_line_width = 2
+            # 根据图像大小自适应调整点和线的尺寸
+            img_height, img_width = original_image.shape[:2]
+            img_diagonal = np.sqrt(img_width**2 + img_height**2)
+            
+            # 使用对数比例计算尺寸因子，避免大图像时尺寸过大
+            size_factor = 0.5 + 0.5 * np.log10(max(1, img_diagonal / 500))
+            size_factor = min(size_factor, 3.0)  # 限制最大缩放因子
+            
+            # 基础尺寸
+            base_point_radius = 5
+            base_border_radius = 7
+            base_line_width = 2
+            
+            # 计算实际尺寸
+            fixed_point_radius = max(3, int(base_point_radius * size_factor))
+            fixed_border_radius = max(5, int(base_border_radius * size_factor))
+            fixed_line_width = max(1, int(base_line_width * size_factor))
+            
+            # 考虑显示比例进行调整
             point_radius = max(1, int(round(fixed_point_radius / display_scale)))
             border_radius = max(point_radius + 1, int(round(fixed_border_radius / display_scale)))
             line_width = max(1, int(round(fixed_line_width / display_scale)))
@@ -153,10 +168,11 @@ def click_event(event, x, y, flags, param):
             # 绘制红色填充
             cv2.circle(image, point_pos, point_radius, (0, 0, 255), -1)
 
-            # 显示点的序号，使用更小的字体和位置
+            # 显示点的序号，使用自适应大小的字体
             font = cv2.FONT_HERSHEY_DUPLEX
-            font_scale = 0.5
-            font_thickness = 1
+            base_font_scale = 0.5
+            font_scale = max(0.4, min(1.0, base_font_scale * size_factor))
+            font_thickness = 1 if size_factor < 1.5 else 2
             text = str(len(points))
             (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, font_thickness)
             text_x = point_pos[0] - text_width // 2

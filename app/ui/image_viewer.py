@@ -2,7 +2,7 @@ import sys
 import os
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QGraphicsView, QGraphicsScene, QPushButton, QSizePolicy, QMessageBox,
-    QButtonGroup, QGraphicsEllipseItem, QGraphicsLineItem, QGraphicsSimpleTextItem, QGraphicsRectItem
+    QButtonGroup, QGraphicsEllipseItem, QGraphicsLineItem, QGraphicsSimpleTextItem, QGraphicsRectItem, QFrame
 )
 from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QImage, QIcon, QTransform
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QPointF
@@ -84,6 +84,9 @@ class ImageViewerWidget(QWidget):
         self.current_view_mode = 'original' # Modes: 'original', 'calibration', 'result'
         self.current_result_type_to_display = 'analysis_image' # Default result type
         self.calibration_save_dir = None # Directory to save calibration files
+        
+        # 添加结果数据存储
+        self.analysis_data = {} # 存储每个图像的分析结果数据，格式: {image_path: {"盖度": value, "高度": value, "密度": value}}
 
         self._setup_ui()
 
@@ -143,6 +146,48 @@ class ImageViewerWidget(QWidget):
         # 设置大小策略
         self.graphics_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         center_layout.addWidget(self.graphics_view)
+        
+        # 添加分隔线
+        # 添加分隔线
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        separator.setStyleSheet("background-color: #555555;")
+        separator.setMaximumHeight(1)
+        
+        # 添加数据面板
+        self.data_panel = QWidget()
+        self.data_panel.setFixedHeight(23)  # 固定高度
+        data_panel_layout = QHBoxLayout(self.data_panel)
+        data_panel_layout.setContentsMargins(15, 0, 15, 0)  # 只保留左右边距
+        data_panel_layout.setSpacing(30)  # 标签间距
+        
+        # 创建数据标签
+        self.coverage_label = QLabel("盖度: N/A")
+        self.height_label = QLabel("高度: N/A")
+        self.density_label = QLabel("密度: N/A")
+        
+        # 设置标签样式
+        label_style = """
+            QLabel {
+                color: #e0e0e0;
+                font-size: 12px;
+            }
+        """
+        
+        for label in [self.coverage_label, self.height_label, self.density_label]:
+            label.setStyleSheet(label_style)
+        
+        # 添加到面板布局
+        data_panel_layout.addStretch(1)
+        data_panel_layout.addWidget(self.coverage_label)
+        data_panel_layout.addWidget(self.height_label)
+        data_panel_layout.addWidget(self.density_label)
+        data_panel_layout.addStretch(1)
+        
+        # 添加到中心布局
+        center_layout.addWidget(separator)
+        center_layout.addWidget(self.data_panel)
 
         # 校准控制按钮 (不变)
         self.calibration_controls_widget = QWidget()
@@ -233,6 +278,9 @@ class ImageViewerWidget(QWidget):
             result_dict = self.result_image_map.get(image_path, {})
             has_image_paths = any(isinstance(v, str) for k, v in result_dict.items() if k != 'calibration_points')
             self.view_result_button.setEnabled(has_image_paths)
+            
+            # 更新数据面板
+            self._update_data_panel()
         else:
             self.current_image_path = None
             self.graphics_view.setScene(None)
@@ -399,6 +447,7 @@ class ImageViewerWidget(QWidget):
                 if original_path != self.current_image_path or not self.current_pixmap_item:
                     logging.info(f"[Viewer _on_preview_selected] Original/Calib mode: Selection changed or pixmap missing. Displaying {os.path.basename(original_path)}")
                     self.display_image(original_path) # Handles setting self.current_image_path and loading
+                    # 数据面板会在display_image中更新
                 else:
                     logging.debug(f"[Viewer _on_preview_selected] Original/Calib mode: Selected image ({os.path.basename(original_path)}) is already displayed. Doing nothing.")
                 # --- END FIX --- #
@@ -407,13 +456,13 @@ class ImageViewerWidget(QWidget):
 
         elif self.current_view_mode == 'result':
             if isinstance(selected_data, tuple) and len(selected_data) == 2:
-                result_type, result_path = selected_data
-                # --- FIX: Only display if result path is different OR pixmap is missing --- #
-                # Check if the result image is already displayed (tricky without storing current result path explicitly)
-                # Let's always reload the result image for simplicity for now, but avoid changing mode state.
-                logging.info(f"[Viewer _on_preview_selected] Result mode: Selected {result_type}. Displaying {os.path.basename(result_path)}")
-                self._load_and_display_base_image(result_path)
-                # --- END FIX --- #
+                original_path, result_type = selected_data
+                logging.info(f"[Viewer _on_preview_selected] Result mode: Selected {result_type}. Displaying...")
+                self._display_result_image(original_path, result_type)
+                # 显示结果时，数据面板也应该显示对应原始图像的分析结果
+                self.current_image_path = original_path
+                self._update_data_panel()
+                # --- END FIX ---
             else:
                  logging.warning(f"[Viewer] Error: Expected tuple (type, path) in result mode, got {type(selected_data)}")
 
@@ -424,6 +473,9 @@ class ImageViewerWidget(QWidget):
         """根据按钮点击设置视图模式。 0: original, 1: calibration, 2: result"""
         # Determine the effective image path for context (if needed)
         effective_image_path = target_image_path if target_image_path else self.current_image_path
+        
+        # 根据视图模式控制数据面板的显示
+        self.data_panel.setVisible(mode_id in [0, 2])  # 只在原始图像(0)和结果图像(2)视图显示
         
         # 如果提供了目标图片路径，先确保它在图片列表中
         if target_image_path and target_image_path not in self.image_paths:
@@ -744,16 +796,38 @@ class ImageViewerWidget(QWidget):
              logging.warning("[Viewer _redraw_calibration_points] Cannot draw points: pixmap item missing or not in scene before drawing.")
              return
  
+        # 获取图像尺寸，用于计算自适应大小
+        pixmap_rect = self.current_pixmap_item.boundingRect()
+        image_width = pixmap_rect.width()
+        image_height = pixmap_rect.height()
+        
+        # 计算图像对角线长度，用作比例参考
+        image_diagonal = np.sqrt(image_width**2 + image_height**2)
+        
+        # 根据图像大小自适应计算点和线的大小
+        # 对于小图像，保持最小尺寸；对于大图像，按比例增大但有上限
+        base_point_radius = 3  # 基础点半径
+        base_line_width = 2    # 基础线宽度
+        
+        # 计算自适应尺寸，使用对角线长度作为参考
+        # 使用对数比例，避免大图像时尺寸过大
+        size_factor = 0.8 + 0.7 * np.log10(max(1, image_diagonal / 500))  # 增加基础系数和比例系数
+        size_factor = min(size_factor, 100.0)  # 增加最大缩放因子上限从3.0到10.0
+        
+        point_radius = max(8, int(base_point_radius * size_factor))
+        line_width = max(3, int(base_line_width * size_factor))
+        font_size = max(10, int(12 * size_factor))  # 增加字体基础大小从10到12
+        
+        # 根据点的大小调整标签偏移
+        label_offset_x = point_radius + 2
+        label_offset_y = -point_radius - 2
+        
         # 绘制新的点和线
-        point_pen = QPen(QColor(255, 0, 0), 30) # 亮红色点轮廓
-        point_brush = QColor(255, 0, 0, 200) # 半透明亮红色填充
-        line_pen = QPen(QColor(255, 0, 0, 230), 30) # 亮红色粗线
-        point_radius = 10 # 较大的点半径
-        label_offset_x = 10
-        label_offset_y = -20
+        point_pen = QPen(QColor(255, 0, 0), max(1, line_width/2))  # 红色点边框
+        point_brush = QColor(255, 0, 0, 200)  # 半透明红色填充
+        line_pen = QPen(QColor(255, 0, 0, 230), line_width)  # 红色线
 
         # Ensure points are within bounds (precautionary)
-        pixmap_rect = self.current_pixmap_item.boundingRect()
 
         scene_points = []
         for i, pt in enumerate(self.calibration_points):
@@ -782,7 +856,7 @@ class ImageViewerWidget(QWidget):
             text.setPos(scene_pt.x() + label_offset_x, scene_pt.y() + label_offset_y)
             text.setBrush(QColor("red"))
             font = text.font()
-            font.setPointSize(12) # Make number slightly larger
+            font.setPointSize(font_size) # 使用自适应字体大小
             font.setBold(True)
             text.setFont(font)
             self.current_scene.addItem(text)
@@ -800,7 +874,7 @@ class ImageViewerWidget(QWidget):
             line.setPen(line_pen)
             self.current_scene.addItem(line)
 
-        logging.debug(f"[Viewer _redraw_calibration_points] Drawing {len(self.calibration_points)} points.")
+        logging.debug(f"[Viewer _redraw_calibration_points] Drawing {len(self.calibration_points)} points with radius {point_radius} and line width {line_width}.")
 
     def _reset_calibration_points(self):
         """重置当前图像的校准点"""
@@ -922,6 +996,15 @@ class ImageViewerWidget(QWidget):
             }
             self.result_image_map[original_path] = filtered_results
             # --- END FIX 2 --- #
+            
+            # 提取分析数据
+            if not original_path in self.analysis_data:
+                self.analysis_data[original_path] = {}
+                
+            # 保存常用分析结果，用于数据面板显示
+            for key in ['盖度', '高度', '密度']:
+                if key in results and results[key] is not None:
+                    self.analysis_data[original_path][key] = results[key]
 
             num_items = len(self.result_image_map[original_path])
             logging.info(f"[Viewer] Stored {num_items} result items for {os.path.basename(original_path)}: {list(self.result_image_map[original_path].keys())}")
@@ -936,23 +1019,34 @@ class ImageViewerWidget(QWidget):
                  if self.current_view_mode == 'result':
                      logging.info("[Viewer] Results updated for current image while in result view. Re-displaying results.")
                      self._set_view_mode(2) # Re-trigger result view display
+                
+                 # 更新数据面板
+                 self._update_data_panel()
 
         else:
              # Clear results for this path if results are None or invalid
              if original_path in self.result_image_map:
                  del self.result_image_map[original_path]
+             if original_path in self.analysis_data:
+                 del self.analysis_data[original_path]
              if original_path == self.current_image_path:
                  self.view_result_button.setEnabled(False)
                  # If currently viewing results for this image, switch back to original
                  if self.current_view_mode == 'result':
                      self._set_view_mode(0)
+                 
+                 # 更新数据面板（清空数据）
+                 self._update_data_panel()
 
     def clear_results(self):
         """清除所有存储的结果映射"""
         self.result_image_map.clear()
+        self.analysis_data.clear()  # 清除分析数据
         # If an image is currently displayed, disable its result button
         if self.current_image_path:
             self.view_result_button.setEnabled(False)
+            # 更新数据面板（清空数据）
+            self._update_data_panel()
         logging.info("[Viewer] All result maps cleared.")
 
     def get_calibration_points(self) -> Optional[List[List[int]]]:
@@ -1060,6 +1154,40 @@ class ImageViewerWidget(QWidget):
         # 阻止事件继续传播
         event.accept()
         # --- End Bug Fix 2 ---
+        
+    def _update_data_panel(self):
+        """更新数据面板显示的分析结果"""
+        if not self.current_image_path or self.current_image_path not in self.analysis_data:
+            # 如果没有当前图像或没有分析数据，显示默认值
+            self.coverage_label.setText("盖度: N/A")
+            self.height_label.setText("高度: N/A")
+            self.density_label.setText("密度: N/A")
+            return
+        
+        # 获取当前图像的分析数据
+        data = self.analysis_data[self.current_image_path]
+        
+        # 更新标签
+        coverage = data.get('盖度', 'N/A')
+        if coverage != 'N/A':
+            coverage_str = f"{coverage:.1f}%" if isinstance(coverage, (int, float)) else str(coverage)
+            self.coverage_label.setText(f"盖度: {coverage_str}")
+        else:
+            self.coverage_label.setText("盖度: N/A")
+            
+        height = data.get('高度', 'N/A')
+        if height != 'N/A':
+            height_str = f"{height:.1f}cm" if isinstance(height, (int, float)) else str(height)
+            self.height_label.setText(f"高度: {height_str}")
+        else:
+            self.height_label.setText("高度: N/A")
+            
+        density = data.get('密度', 'N/A')
+        if density != 'N/A':
+            density_str = f"{density:.1f}/m²" if isinstance(density, (int, float)) else str(density)
+            self.density_label.setText(f"密度: {density_str}")
+        else:
+            self.density_label.setText("密度: N/A")
 
 # Example usage (for testing)
 if __name__ == '__main__':
