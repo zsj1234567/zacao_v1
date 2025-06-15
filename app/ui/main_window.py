@@ -32,6 +32,8 @@ if project_root not in sys.path:
 
 from app.core.analysis_runner import AnalysisRunner
 from app.utils.logging_handler import setup_logging
+# 导入动态分析管理器
+from app.core.dynamic_analysis_manager import DynamicAnalysisManager
 
 class MainWindow(QMainWindow):
     log_signal = pyqtSignal(str)
@@ -46,6 +48,10 @@ class MainWindow(QMainWindow):
         self.pending_calibrations = [] # List of image paths needing manual calibration
         self.loaded_calibration_points = {} # Dict to store loaded/saved points {img_path: points}
         self.last_run_config = None
+        
+        # 初始化动态分析管理器
+        self.dynamic_analysis_manager = DynamicAnalysisManager()
+        self.setup_dynamic_analysis_signals()
 
         # 默认路径设置
         self.default_input_path = os.path.join(project_root, "input_data")
@@ -305,6 +311,51 @@ class MainWindow(QMainWindow):
         self.toggle_lidar_params(False)
         # 根据模型类型更新参数可见性
         self.update_parameter_visibility()
+
+        # --- 添加动态分析控制面板 ---
+        self.dynamic_analysis_group = QGroupBox("动态分析")
+        dynamic_analysis_layout = QVBoxLayout()
+        self.dynamic_analysis_group.setLayout(dynamic_analysis_layout)
+        
+        # 动态分析开关
+        self.dynamic_analysis_checkbox = QCheckBox("启用动态分析")
+        self.dynamic_analysis_checkbox.setToolTip("启用后，将自动监控输入目录中的新图像并进行分析")
+        self.dynamic_analysis_checkbox.stateChanged.connect(self.toggle_dynamic_analysis)
+        
+        # 检查间隔设置
+        interval_layout = QHBoxLayout()
+        interval_layout.addWidget(QLabel("检查间隔(秒):"))
+        self.interval_spinbox = QSpinBox()
+        self.interval_spinbox.setRange(1, 3600)
+        self.interval_spinbox.setValue(5)
+        self.interval_spinbox.setToolTip("设置检查新文件的时间间隔")
+        self.interval_spinbox.valueChanged.connect(self.update_check_interval)
+        interval_layout.addWidget(self.interval_spinbox)
+        interval_layout.addStretch()
+        
+        # 状态显示
+        status_layout = QHBoxLayout()
+        status_layout.addWidget(QLabel("状态:"))
+        self.dynamic_status_label = QLabel("未启用")
+        self.dynamic_status_label.setStyleSheet("color: gray;")
+        status_layout.addWidget(self.dynamic_status_label)
+        status_layout.addStretch()
+        
+        # 已分析文件计数
+        count_layout = QHBoxLayout()
+        count_layout.addWidget(QLabel("已分析文件:"))
+        self.analyzed_count_label = QLabel("0")
+        count_layout.addWidget(self.analyzed_count_label)
+        count_layout.addStretch()
+        
+        # 添加到布局
+        dynamic_analysis_layout.addWidget(self.dynamic_analysis_checkbox)
+        dynamic_analysis_layout.addLayout(interval_layout)
+        dynamic_analysis_layout.addLayout(status_layout)
+        dynamic_analysis_layout.addLayout(count_layout)
+        
+        # 将动态分析组添加到配置面板
+        self.config_layout.addWidget(self.dynamic_analysis_group)
 
         # --- 底部: 进度条、日志和控制按钮 ---
         bottom_layout = QVBoxLayout()
@@ -1276,21 +1327,20 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "保存失败", f"保存校准点时出错: {e}")
 
     def closeEvent(self, event):
-        """关闭窗口前检查是否有正在运行的分析"""
+        """关闭窗口时的处理"""
+        # 停止动态分析
+        if self.dynamic_analysis_manager and self.dynamic_analysis_manager.is_monitoring():
+            self.dynamic_analysis_manager.stop_monitoring()
+            
+        # 停止分析线程
         if self.analysis_thread and self.analysis_thread.isRunning():
-            reply = QMessageBox.question(self,
-                                       "确认退出",
-                                       "分析任务仍在运行中，确定要退出吗？",
-                                       QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                                       QMessageBox.StandardButton.No)
-            if reply == QMessageBox.StandardButton.Yes:
-                self.stop_analysis() # 尝试停止
-                # 可以考虑等待一小段时间让线程结束，或者直接退出
-                event.accept()
-            else:
-                event.ignore()
-        else:
-            event.accept()
+            if self.analysis_runner:
+                self.analysis_runner.stop()
+            self.analysis_thread.quit()
+            self.analysis_thread.wait(1000)  # 等待最多1秒
+            
+        # 调用父类方法
+        super().closeEvent(event)
 
     def _set_view_mode(self, mode_id: int, target_image_path: Optional[str] = None):
         """
@@ -1390,6 +1440,106 @@ class MainWindow(QMainWindow):
                 self.main_splitter.setSizes([0, sum(sizes)])  # 完全隐藏配置面板
             elif sizes[0] < 200:  # 如果宽度小于最小宽度
                 self.main_splitter.setSizes([200, sizes[1] + (sizes[0] - 200)])  # 设置为最小宽度
+
+    def setup_dynamic_analysis_signals(self):
+        """设置动态分析管理器的信号连接"""
+        # 连接动态分析管理器的信号
+        self.dynamic_analysis_manager.new_files_found.connect(self.on_new_files_found)
+        self.dynamic_analysis_manager.analysis_started.connect(self.on_dynamic_analysis_started)
+        self.dynamic_analysis_manager.analysis_progress.connect(self.update_progress)
+        self.dynamic_analysis_manager.analysis_log.connect(self.append_log)
+        self.dynamic_analysis_manager.analysis_file_completed.connect(self.on_dynamic_analysis_file_completed)
+        self.dynamic_analysis_manager.analysis_all_completed.connect(self.on_dynamic_analysis_all_completed)
+        
+    def toggle_dynamic_analysis(self, state):
+        """切换动态分析功能的开关状态"""
+        if state == Qt.CheckState.Checked.value:
+            # 获取当前配置
+            config = self.get_config()
+            if not config:
+                self.dynamic_analysis_checkbox.setChecked(False)
+                return
+                
+            # 设置动态分析管理器的配置
+            config['input_dir'] = self.input_path_edit.text()
+            self.dynamic_analysis_manager.set_config(config)
+            
+            # 设置检查间隔
+            interval_ms = self.interval_spinbox.value() * 1000
+            self.dynamic_analysis_manager.set_monitor_interval(interval_ms)
+            
+            # 启动监控
+            self.dynamic_analysis_manager.start_monitoring()
+            self.dynamic_status_label.setText("监控中")
+            self.dynamic_status_label.setStyleSheet("color: green;")
+            
+            # 更新已分析文件计数
+            self.update_analyzed_files_count()
+            
+            self.append_log(f"已启动动态分析，监控目录: {config['input_dir']}")
+        else:
+            # 停止监控
+            self.dynamic_analysis_manager.stop_monitoring()
+            self.dynamic_status_label.setText("已停止")
+            self.dynamic_status_label.setStyleSheet("color: gray;")
+            self.append_log("已停止动态分析")
+            
+    def update_check_interval(self, value):
+        """更新检查间隔"""
+        if self.dynamic_analysis_manager.is_monitoring():
+            interval_ms = value * 1000
+            self.dynamic_analysis_manager.set_monitor_interval(interval_ms)
+            self.append_log(f"已更新检查间隔: {value}秒")
+            
+    def update_analyzed_files_count(self):
+        """更新已分析文件计数"""
+        count = self.dynamic_analysis_manager.get_analyzed_files_count()
+        self.analyzed_count_label.setText(str(count))
+        
+    def on_new_files_found(self, files):
+        """当发现新文件时的处理"""
+        self.append_log(f"发现 {len(files)} 个新文件待分析")
+        
+    def on_dynamic_analysis_started(self, file_path):
+        """当动态分析开始时的处理"""
+        self.append_log(f"开始分析文件: {os.path.basename(file_path)}")
+        self.dynamic_status_label.setText("分析中")
+        self.dynamic_status_label.setStyleSheet("color: blue;")
+        
+    def on_dynamic_analysis_file_completed(self, success, file_path, results):
+        """当单个文件分析完成时的处理"""
+        file_name = os.path.basename(file_path)
+        if success:
+            self.append_log(f"文件 {file_name} 分析成功")
+            # 更新已分析文件计数
+            self.update_analyzed_files_count()
+            
+            # 如果有图像查看器，可以加载结果
+            if hasattr(self, 'image_viewer') and self.image_viewer:
+                # 这里可以添加加载结果到图像查看器的代码
+                pass
+        else:
+            self.append_log(f"文件 {file_name} 分析失败")
+            
+        # 恢复状态显示
+        if self.dynamic_analysis_manager.is_monitoring():
+            self.dynamic_status_label.setText("监控中")
+            self.dynamic_status_label.setStyleSheet("color: green;")
+        else:
+            self.dynamic_status_label.setText("已停止")
+            self.dynamic_status_label.setStyleSheet("color: gray;")
+            
+    def on_dynamic_analysis_all_completed(self):
+        """当所有文件分析完成时的处理"""
+        self.append_log("所有新文件分析完成")
+        
+        # 恢复状态显示
+        if self.dynamic_analysis_manager.is_monitoring():
+            self.dynamic_status_label.setText("监控中")
+            self.dynamic_status_label.setStyleSheet("color: green;")
+        else:
+            self.dynamic_status_label.setText("已停止")
+            self.dynamic_status_label.setStyleSheet("color: gray;")
 
 # # --- 用于测试 --- #
 # if __name__ == '__main__':
