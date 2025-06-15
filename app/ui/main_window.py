@@ -47,6 +47,16 @@ class MainWindow(QMainWindow):
         self.loaded_calibration_points = {} # Dict to store loaded/saved points {img_path: points}
         self.last_run_config = None
 
+        # 默认路径设置
+        self.default_input_path = os.path.join(project_root, "input_data")
+        self.default_output_path = os.path.join(project_root, "output_data")
+        self.default_lidar_path = os.path.join(project_root, "lidar_data")
+        
+        # 确保默认文件夹存在
+        os.makedirs(self.default_input_path, exist_ok=True)
+        os.makedirs(self.default_output_path, exist_ok=True)
+        os.makedirs(self.default_lidar_path, exist_ok=True)
+
         # 设置暗色主题 (可选)
         self.apply_stylesheet()
 
@@ -85,6 +95,7 @@ class MainWindow(QMainWindow):
         self.input_label = QLabel("输入图片/文件夹:")
         self.input_path_edit = QLineEdit()
         self.input_path_edit.setPlaceholderText("选择单个图片文件或包含图片的文件夹")
+        self.input_path_edit.setText(self.default_input_path)  # 设置默认输入路径
         self.browse_input_button = QPushButton("浏览...")
         self.browse_input_button.clicked.connect(self.browse_input)
         self.browse_input_button.setObjectName("browse_button") # For styling
@@ -98,6 +109,7 @@ class MainWindow(QMainWindow):
         self.output_label = QLabel("输出文件夹:")
         self.output_path_edit = QLineEdit()
         self.output_path_edit.setPlaceholderText("选择保存结果的文件夹")
+        self.output_path_edit.setText(self.default_output_path)  # 设置默认输出路径
         self.browse_output_button = QPushButton("浏览...")
         self.browse_output_button.clicked.connect(self.browse_output)
         self.browse_output_button.setObjectName("browse_button") # For styling
@@ -118,6 +130,16 @@ class MainWindow(QMainWindow):
         calibration_layout.addWidget(self.calibration_path_edit)
         calibration_layout.addWidget(self.browse_calibration_button)
         io_layout.addLayout(calibration_layout)
+
+        # --- 新增：加载结果按钮 ---
+        load_results_layout = QHBoxLayout()
+        self.load_results_button = QPushButton("加载已有结果")
+        self.load_results_button.clicked.connect(self.browse_and_load_results)
+        self.load_results_button.setObjectName("load_results_button")
+        self.load_results_button.setStyleSheet("background-color: #2a82da; color: white; font-weight: bold;")
+        load_results_layout.addStretch()
+        load_results_layout.addWidget(self.load_results_button)
+        io_layout.addLayout(load_results_layout)
 
         # --- 调整标签宽度和对齐 (包括新的校准标签) ---
         input_fm = self.input_label.fontMetrics()
@@ -236,6 +258,7 @@ class MainWindow(QMainWindow):
         self.lidar_dir_layout = QHBoxLayout()
         self.lidar_dir_edit = QLineEdit()
         self.lidar_dir_edit.setPlaceholderText("包含 .pcd 文件的文件夹")
+        self.lidar_dir_edit.setText(self.default_lidar_path)  # 设置默认Lidar路径
         self.browse_lidar_button = QPushButton("浏览...")
         self.browse_lidar_button.clicked.connect(self.browse_lidar_dir)
         self.browse_lidar_button.setObjectName("browse_button") # For styling
@@ -556,53 +579,59 @@ class MainWindow(QMainWindow):
         dialog = QFileDialog(self)
         # Start by allowing selection of files or a directory
         dialog.setFileMode(QFileDialog.FileMode.AnyFile)
-        # Use native dialog for better experience if possible
-        # dialog.setOptions(QFileDialog.Option.DontUseNativeDialog(False)) # This option might not be needed / causes issues
+        # 以默认输入路径为起始目录
+        starting_dir = self.input_path_edit.text() if os.path.exists(self.input_path_edit.text()) else self.default_input_path
 
         # Try getting a directory first
-        dir_path = QFileDialog.getExistingDirectory(self, "选择图片文件夹", "", options=QFileDialog.Option.ShowDirsOnly)
+        dir_path = QFileDialog.getExistingDirectory(self, "选择图片文件夹", starting_dir, options=QFileDialog.Option.ShowDirsOnly)
         if dir_path:
             self._handle_input_path_selection(dir_path)
             return
 
         # If no directory was selected, try getting file(s)
-        files, _ = QFileDialog.getOpenFileNames(self, "选择一个或多个图片文件", "",
+        files, _ = QFileDialog.getOpenFileNames(self, "选择一个或多个图片文件", starting_dir,
                                             "图片文件 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff);;所有文件 (*.*)")
         if files:
             # Handle single or multiple file selection
             self._handle_input_path_selection(files)
 
     def browse_output(self):
-        path = QFileDialog.getExistingDirectory(self, "选择输出文件夹", "", QFileDialog.Option.ShowDirsOnly)
+        starting_dir = self.output_path_edit.text() if os.path.exists(self.output_path_edit.text()) else self.default_output_path
+        path = QFileDialog.getExistingDirectory(self, "选择输出文件夹", starting_dir, QFileDialog.Option.ShowDirsOnly)
         if path:
             self.output_path_edit.setText(path)
 
     def browse_hsv_config(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择 HSV 配置文件", "", "JSON 文件 (*.json)")
+        starting_dir = os.path.dirname(self.hsv_config_path_edit.text()) if os.path.exists(os.path.dirname(self.hsv_config_path_edit.text())) else self.default_input_path
+        path, _ = QFileDialog.getOpenFileName(self, "选择 HSV 配置文件", starting_dir, "JSON 文件 (*.json)")
         if path:
             self.hsv_config_path_edit.setText(path)
 
     def browse_dl_model(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择深度学习模型文件", "",
+        starting_dir = os.path.dirname(self.dl_model_path_edit.text()) if os.path.exists(os.path.dirname(self.dl_model_path_edit.text())) else self.default_input_path
+        path, _ = QFileDialog.getOpenFileName(self, "选择深度学习模型文件", starting_dir,
                                             "模型文件 (*.pt *.pth *.onnx);;所有文件 (*.*)")
         if path:
             self.dl_model_path_edit.setText(path)
 
     def browse_lidar_dir(self):
-        path = QFileDialog.getExistingDirectory(self, "选择 Lidar 数据文件夹", "", QFileDialog.Option.ShowDirsOnly)
+        starting_dir = self.lidar_dir_edit.text() if os.path.exists(self.lidar_dir_edit.text()) else self.default_lidar_path
+        path = QFileDialog.getExistingDirectory(self, "选择 Lidar 数据文件夹", starting_dir, QFileDialog.Option.ShowDirsOnly)
         if path:
             self.lidar_dir_edit.setText(path)
 
     def browse_calibration(self):
         """浏览校准文件或目录"""
         dialog = QFileDialog(self)
+        # 定义起始目录
+        starting_dir = self.calibration_path_edit.text() if os.path.exists(self.calibration_path_edit.text()) else self.default_input_path
         # 允许选择文件或目录
-        path = QFileDialog.getExistingDirectory(self, "选择校准目录", "", QFileDialog.Option.ShowDirsOnly)
+        path = QFileDialog.getExistingDirectory(self, "选择校准目录", starting_dir, QFileDialog.Option.ShowDirsOnly)
         if path:
             self.calibration_path_edit.setText(path)
             return
         # 如果没选目录，尝试选文件
-        file, _ = QFileDialog.getOpenFileName(self, "选择校准文件", "", "JSON 文件 (*.json)")
+        file, _ = QFileDialog.getOpenFileName(self, "选择校准文件", starting_dir, "JSON 文件 (*.json)")
         if file:
              self.calibration_path_edit.setText(file)
 
@@ -876,6 +905,146 @@ class MainWindow(QMainWindow):
         self.log_edit.verticalScrollBar().setValue(self.log_edit.verticalScrollBar().maximum())
         QApplication.processEvents() # 强制 UI 刷新以显示日志
 
+    def load_results_from_summary(self, output_dir):
+        """从analysis_summary.json文件中加载所有结果图像"""
+        try:
+            # 规范化输出目录路径
+            output_dir = os.path.normpath(output_dir)
+            summary_file = "analysis_summary.json"
+            summary_file_path = os.path.join(output_dir, summary_file)
+            
+            # 读取摘要文件
+            with open(summary_file_path, 'r', encoding='utf-8') as f:
+                summary_data = json.load(f)
+            
+            # 获取所有图像路径
+            image_results = summary_data.get("image_results", [])
+            if not image_results:
+                self.append_log("分析摘要中未找到图像结果")
+                return False
+            
+            self.append_log(f"找到 {len(image_results)} 个结果文件")
+            
+            # 按图片序号分组
+            image_groups = {}  # 序号 -> {原始图片路径, 结果图片字典}
+            
+            # 第一遍：识别所有原始图像
+            for path in image_results:
+                # 确保路径是绝对路径
+                if not os.path.isabs(path):
+                    path = os.path.normpath(os.path.join(output_dir, path))
+                else:
+                    path = os.path.normpath(path)
+                
+                if not os.path.exists(path):
+                    self.append_log(f"警告: 图像文件不存在: {path}")
+                    continue
+                
+                filename = os.path.basename(path)
+                
+                # 检查是否是原始图像 (没有特殊后缀的图像)
+                is_original = True
+                for suffix in ['_debug.png', '_analysis.png', 'traditional_default_analysis.png']:
+                    if suffix in filename:
+                        is_original = False
+                        break
+                
+                if is_original:
+                    # 提取序号 (可能是 "01.jpeg" 或 "01_xxx.jpg" 格式)
+                    file_base = os.path.splitext(filename)[0]  # 去掉扩展名
+                    prefix = file_base.split('_')[0]  # 取第一部分作为序号
+                    
+                    # 检查是否是数字
+                    if prefix.isdigit():
+                        if prefix not in image_groups:
+                            image_groups[prefix] = {'original': None, 'results': {}}
+                        
+                        image_groups[prefix]['original'] = path
+                        self.append_log(f"添加原始图像: {filename} (序号: {prefix})")
+            
+            # 第二遍：处理所有结果图像
+            for path in image_results:
+                # 确保路径是绝对路径
+                if not os.path.isabs(path):
+                    path = os.path.normpath(os.path.join(output_dir, path))
+                else:
+                    path = os.path.normpath(path)
+                
+                if not os.path.exists(path):
+                    continue
+                
+                filename = os.path.basename(path)
+                
+                # 跳过原始图像
+                is_result = False
+                for suffix in ['_debug.png', '_analysis.png', 'traditional_default_analysis.png']:
+                    if suffix in filename:
+                        is_result = True
+                        break
+                
+                if not is_result:
+                    continue
+                
+                # 提取序号
+                prefix = filename.split('_')[0]
+                if not prefix.isdigit():
+                    self.append_log(f"警告: 无法从结果图像名称提取序号: {filename}")
+                    continue
+                
+                # 确保序号组存在
+                if prefix not in image_groups:
+                    image_groups[prefix] = {'original': None, 'results': {}}
+                
+                # 根据文件名确定图片类型
+                if 'traditional_default_analysis.png' in filename:
+                    image_groups[prefix]['results']['traditional_default_analysis'] = path
+                    self.append_log(f"添加传统分析结果: {filename}")
+                elif '_analysis.png' in filename:
+                    image_groups[prefix]['results']['analysis_image'] = path
+                    self.append_log(f"添加雷达分析结果: {filename}")
+                elif '_debug.png' in filename:
+                    # 提取debug类型（例如：从 xxx_hsv_mask_debug.png 提取 hsv_mask）
+                    debug_parts = filename.split('_')
+                    if len(debug_parts) >= 3:
+                        debug_type = '_'.join(debug_parts[1:-1])
+                        result_type = f'{debug_type}_debug_image'
+                        image_groups[prefix]['results'][result_type] = path
+                        self.append_log(f"添加调试图像: {filename} -> {result_type}")
+            
+            # 准备加载的原始图片列表
+            original_images = []
+            valid_groups = {}
+            
+            # 第三遍：验证和整理数据
+            for prefix in sorted(image_groups.keys()):  # 按序号排序
+                group = image_groups[prefix]
+                if group['original'] and os.path.exists(group['original']):
+                    original_images.append(group['original'])
+                    if group['results']:  # 只有当有结果图片时才添加到有效组
+                        valid_groups[group['original']] = group['results']
+                        self.append_log(f"有效组 {prefix}: 原始图像 {os.path.basename(group['original'])}, "
+                                     f"结果类型: {list(group['results'].keys())}")
+            
+            # 加载原始图像
+            if original_images:
+                self.append_log(f"开始加载 {len(original_images)} 个原始图像")
+                self.image_viewer.load_images(original_images)
+                
+                # 为每个原始图像设置结果数据
+                for orig_path, results in valid_groups.items():
+                    self.append_log(f"设置结果数据: {os.path.basename(orig_path)} -> {list(results.keys())}")
+                    self.image_viewer.set_result_data(orig_path, results)
+                
+                return True
+            else:
+                self.append_log("未找到任何原始图像")
+                return False
+                
+        except Exception as e:
+            self.append_log(f"加载分析摘要时出错: {str(e)}")
+            logging.error(traceback.format_exc())
+            return False
+
     def on_analysis_complete(self, success, message):
         # logging.info(f"分析完成: success={success}, message='{message}'") # 移除原始详细日志
         completion_status = "成功完成" if success else "失败"
@@ -900,6 +1069,11 @@ class MainWindow(QMainWindow):
         self.image_viewer.clear_results() # Clear previous results first
 
         if success:
+            # 加载分析摘要文件中的所有结果图像
+            if self.last_run_config and 'output_dir' in self.last_run_config:
+                output_dir = self.last_run_config['output_dir']
+                self.load_results_from_summary(output_dir)
+            
             # QMessageBox.information(self, "完成", message) # 改为最后显示摘要信息
             results_list = []
             try:
@@ -1094,6 +1268,83 @@ class MainWindow(QMainWindow):
         else:
             # 其他模式切换
             self.image_viewer._set_view_mode(mode_id)
+
+    def browse_and_load_results(self):
+        """浏览并加载已有的分析结果"""
+        try:
+            # 从当前输出路径或默认输出路径开始浏览
+            starting_dir = self.output_path_edit.text() if os.path.exists(self.output_path_edit.text()) else self.default_output_path
+            results_dir = QFileDialog.getExistingDirectory(
+                self, "选择结果文件夹", starting_dir, QFileDialog.Option.ShowDirsOnly
+            )
+            
+            if not results_dir:
+                return
+            
+            # 规范化路径
+            results_dir = os.path.normpath(results_dir)
+            self.append_log(f"选择了结果文件夹: {results_dir}")
+            
+            # 检查是否存在analysis_summary.json文件
+            summary_file_path = os.path.join(results_dir, "analysis_summary.json")
+            if not os.path.exists(summary_file_path):
+                error_msg = f"所选文件夹中未找到分析摘要文件:\n{summary_file_path}"
+                self.append_log(error_msg)
+                QMessageBox.warning(self, "文件不存在", error_msg)
+                return
+            
+            try:
+                # 先尝试读取摘要文件确保格式正确
+                with open(summary_file_path, 'r', encoding='utf-8') as f:
+                    summary_data = json.load(f)
+                
+                if not summary_data.get("image_results"):
+                    error_msg = "分析摘要文件中未找到有效的图像结果"
+                    self.append_log(error_msg)
+                    QMessageBox.warning(self, "无效数据", error_msg)
+                    return
+                
+                # 清除当前状态
+                self.append_log("清除当前图像查看器状态...")
+                self.image_viewer.preview_list.clear()
+                self.image_viewer.clear_results()
+                
+                # 加载结果
+                self.append_log(f"开始加载结果...")
+                success = self.load_results_from_summary(results_dir)
+                
+                if success:
+                    self.append_log(f"成功加载结果: {results_dir}")
+                    QMessageBox.information(self, "加载成功", 
+                                          f"已加载分析结果: {os.path.basename(results_dir)}")
+                    
+                    # 确保切换到原始视图模式
+                    self.image_viewer.view_original_button.setChecked(True)
+                    self.image_viewer._set_view_mode(0)
+                    
+                    # 选择第一个预览项
+                    if self.image_viewer.preview_list.count() > 0:
+                        self.image_viewer.preview_list.setCurrentRow(0)
+                else:
+                    error_msg = f"加载结果失败，请检查日志了解详细信息。"
+                    self.append_log(error_msg)
+                    QMessageBox.warning(self, "加载失败", error_msg)
+            
+            except json.JSONDecodeError as e:
+                error_msg = f"分析摘要文件格式错误: {str(e)}"
+                self.append_log(error_msg)
+                QMessageBox.critical(self, "文件错误", error_msg)
+            except Exception as e:
+                error_msg = f"加载结果时发生错误: {str(e)}"
+                self.append_log(error_msg)
+                logging.error(traceback.format_exc())
+                QMessageBox.critical(self, "错误", error_msg)
+        
+        except Exception as e:
+            error_msg = f"浏览结果时发生错误: {str(e)}"
+            self.append_log(error_msg)
+            logging.error(traceback.format_exc())
+            QMessageBox.critical(self, "错误", error_msg)
 
 # # --- 用于测试 --- #
 # if __name__ == '__main__':

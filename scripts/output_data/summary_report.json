@@ -1,0 +1,13 @@
+{
+    "timestamp": "2025-06-15 18:01:11",
+    "data_counts": {
+        "atm_records": 10,
+        "jpeg_records": 3,
+        "ptm_records": 4,
+        "ld_records": 3
+    },
+    "time_range": {
+        "start": "2025-05-30 11:25:05",
+        "end": "2025-05-30 13:50:31"
+    }
+}

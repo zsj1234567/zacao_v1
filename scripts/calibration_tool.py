@@ -139,13 +139,32 @@ def click_event(event, x, y, flags, param):
             # 添加点
             points.append((original_x, original_y))
 
-            # 在当前显示的图像上绘制点
-            cv2.circle(image, (int(x), int(y - info_height)),
-                       5, (0, 0, 255), -1)
+            # 让点和线的大小与显示比例无关，始终保持视觉一致
+            fixed_point_radius = 5  # 你可以根据需要调整
+            fixed_border_radius = 7
+            fixed_line_width = 2
+            point_radius = max(1, int(round(fixed_point_radius / display_scale)))
+            border_radius = max(point_radius + 1, int(round(fixed_border_radius / display_scale)))
+            line_width = max(1, int(round(fixed_line_width / display_scale)))
 
-            # 显示点的序号，使用更美观的字体
-            cv2.putText(image, str(len(points)), (int(x) + 10, int(y - info_height) + 10),
-                        cv2.FONT_HERSHEY_DUPLEX, 0.6, (0, 0, 255), 1)
+            point_pos = (int(x), int(y - info_height))
+            # 绘制白色边框
+            cv2.circle(image, point_pos, border_radius, (255, 255, 255), -1)
+            # 绘制红色填充
+            cv2.circle(image, point_pos, point_radius, (0, 0, 255), -1)
+
+            # 显示点的序号，使用更小的字体和位置
+            font = cv2.FONT_HERSHEY_DUPLEX
+            font_scale = 0.5
+            font_thickness = 1
+            text = str(len(points))
+            (text_width, text_height), _ = cv2.getTextSize(text, font, font_scale, font_thickness)
+            text_x = point_pos[0] - text_width // 2
+            text_y = point_pos[1] - point_radius - 4
+            # 绘制白色文本背景
+            cv2.putText(image, text, (text_x, text_y), font, font_scale, (255, 255, 255), font_thickness + 1)
+            # 绘制黑色文本
+            cv2.putText(image, text, (text_x, text_y), font, font_scale, (0, 0, 0), font_thickness)
 
             # 如果已经有多个点，绘制连线
             if len(points) > 1:
@@ -154,7 +173,8 @@ def click_event(event, x, y, flags, param):
                            int(points[i][1] * display_scale))
                     pt2 = (int(points[i+1][0] * display_scale),
                            int(points[i+1][1] * display_scale))
-                    cv2.line(image, pt1, pt2, (0, 255, 0), 2)
+                    # 线宽也根据显示比例修正
+                    cv2.line(image, pt1, pt2, (0, 255, 0), line_width, lineType=cv2.LINE_AA)
 
             # 如果选择了4个点，绘制闭合线
             if len(points) == 4:
@@ -162,7 +182,7 @@ def click_event(event, x, y, flags, param):
                        int(points[-1][1] * display_scale))
                 pt2 = (int(points[0][0] * display_scale),
                        int(points[0][1] * display_scale))
-                cv2.line(image, pt1, pt2, (0, 255, 0), 2)
+                cv2.line(image, pt1, pt2, (0, 255, 0), line_width, lineType=cv2.LINE_AA)
 
             display_image()
 

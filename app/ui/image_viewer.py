@@ -2,7 +2,7 @@ import sys
 import os
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QGraphicsView, QGraphicsScene, QPushButton, QSizePolicy, QMessageBox,
-    QButtonGroup, QGraphicsEllipseItem, QGraphicsLineItem, QGraphicsSimpleTextItem
+    QButtonGroup, QGraphicsEllipseItem, QGraphicsLineItem, QGraphicsSimpleTextItem, QGraphicsRectItem
 )
 from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QImage, QIcon
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QPointF
@@ -18,6 +18,55 @@ class ImageViewerWidget(QWidget):
     calibration_point_selected = pyqtSignal(str, int, int) # image_path, x, y
     calibration_reset_requested = pyqtSignal(str) # image_path
     calibration_save_requested = pyqtSignal(str, list) # image_path, points
+
+    # 结果类型的映射关系
+    RESULT_TYPE_INFO = {
+        'analysis_image': {
+            'order': 0,
+            'display_name': '雷达分析结果',
+            'description': '基于雷达数据的高度分析结果'
+        },
+        'traditional_default_analysis': {
+            'order': 1,
+            'display_name': '传统分析结果',
+            'description': '基于传统图像处理的综合分析结果'
+        },
+        'original_debug_image': {
+            'order': 2,
+            'display_name': '原始图像',
+            'description': '输入的原始图像'
+        },
+        'calibrated_debug_image': {
+            'order': 3,
+            'display_name': '校准后图像',
+            'description': '经过透视变换校准后的图像'
+        },
+        'hsv_mask_debug_image': {
+            'order': 4,
+            'display_name': 'HSV分割掩码',
+            'description': '使用HSV颜色空间进行分割的二值化结果'
+        },
+        'coverage_overlay_debug_image': {
+            'order': 5,
+            'display_name': '覆盖率叠加图',
+            'description': '在原图上叠加显示草地覆盖区域'
+        },
+        'instance_mask_debug_image': {
+            'order': 6,
+            'display_name': '实例分割掩码',
+            'description': '显示每个草地实例的标记结果'
+        },
+        'instance_overlay_debug_image': {
+            'order': 7,
+            'display_name': '实例叠加图',
+            'description': '在原图上用不同颜色标记每个草地实例'
+        },
+        'density_overlay_debug_image': {
+            'order': 8,
+            'display_name': '密度叠加图',
+            'description': '显示草地密度分布的可视化结果'
+        }
+    }
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -504,13 +553,10 @@ class ImageViewerWidget(QWidget):
         self.pixmaps.clear() # Clear pixmap cache when changing modes
 
         fm = self.preview_list.fontMetrics()
-        # --- Bug Fix 1: Use icon width for text eliding --- #
         icon_width = self.preview_list.iconSize().width()
-        # Allow for some padding within the item under the icon
-        available_width = icon_width - 10 # Subtract some padding
-        if available_width < 20: # Ensure minimum width for ellipsis
+        available_width = icon_width - 10
+        if available_width < 20:
              available_width = 20
-        # --- End Bug Fix 1 ---
 
         if mode == 'original':
             logging.debug("[Viewer _populate_preview_list] Populating with ORIGINAL images.")
@@ -519,23 +565,16 @@ class ImageViewerWidget(QWidget):
                  pixmap = self._load_thumbnail(path)
                  if pixmap:
                      base_filename = os.path.basename(path)
-                     # --- Bug Fix 1: Optimization for ellipsis ---
                      text_width = fm.boundingRect(base_filename).width()
                      if text_width > available_width:
                          display_text = fm.elidedText(base_filename, Qt.TextElideMode.ElideRight, available_width)
                      else:
                          display_text = base_filename
-                     # --- End Bug Fix 1 ---
-                     item = QListWidgetItem(QIcon(pixmap), display_text) # Use potentially elided text
-                     item.setData(Qt.ItemDataRole.UserRole, path) # Store full original path
-                     item.setToolTip(path) # Tooltip 显示完整路径
+                     item = QListWidgetItem(QIcon(pixmap), display_text)
+                     item.setData(Qt.ItemDataRole.UserRole, path)
+                     item.setToolTip(path)
                      self.preview_list.addItem(item)
                      items_added += 1
-            # Select the current original image (logic moved to _set_view_mode)
-            # if self.current_image_path and items_added > 0:
-            #      # ... selection logic ...
-            # elif items_added > 0:
-            #      self.preview_list.setCurrentRow(0)
 
         elif mode == 'result':
             logging.debug("[Viewer _populate_preview_list] Populating with RESULT images.")
@@ -544,32 +583,58 @@ class ImageViewerWidget(QWidget):
                 return
 
             items_added = 0
-            # Sort results for consistent order (e.g., analysis first)
-            sorted_results = sorted(data.items(), key=lambda x: (0 if x[0] == 'analysis_image' else 1, x[0]))
-
-            # Note: available_width calculation moved outside the loop
-
-            for result_type, result_path in sorted_results:
-                if not result_path or not isinstance(result_path, str) or not os.path.exists(result_path):
-                    logging.debug(f"[Viewer] Skipping invalid result path for type '{result_type}': {result_path}")
+            # 使用RESULT_TYPE_INFO中定义的顺序和显示名称
+            sorted_results = []
+            for result_type, result_path in data.items():
+                if not isinstance(result_path, str) or result_type == 'calibration_points':
                     continue
+                
+                # 获取结果类型信息
+                type_info = self.RESULT_TYPE_INFO.get(result_type, {
+                    'order': 999,
+                    'display_name': result_type,
+                    'description': '未知结果类型'
+                })
+                
+                sorted_results.append((
+                    type_info['order'],
+                    result_type,
+                    type_info['display_name'],
+                    type_info['description'],
+                    result_path
+                ))
+            
+            sorted_results.sort()  # 按order排序
+
+            for _, result_type, display_name, description, result_path in sorted_results:
+                if not os.path.exists(result_path):
+                    logging.debug(f"[Viewer] 跳过无效的结果路径 '{result_type}': {result_path}")
+                    continue
+                    
                 pixmap = self._load_thumbnail(result_path)
                 if pixmap:
-                    # --- Bug Fix 1: Optimization for ellipsis ---
-                    text_width = fm.boundingRect(result_type).width()
+                    # 使用友好的显示名称
+                    text_width = fm.boundingRect(display_name).width()
                     if text_width > available_width:
-                        display_text = fm.elidedText(result_type, Qt.TextElideMode.ElideRight, available_width)
+                        display_text = fm.elidedText(display_name, Qt.TextElideMode.ElideRight, available_width)
                     else:
-                        display_text = result_type
-                    # --- End Bug Fix 1 ---
-                    item = QListWidgetItem(QIcon(pixmap), display_text) # Use potentially elided text
-                    item.setData(Qt.ItemDataRole.UserRole, (result_type, result_path)) # Store tuple
-                    item.setToolTip(result_path) # Tooltip 显示完整路径
+                        display_text = display_name
+                        
+                    item = QListWidgetItem(QIcon(pixmap), display_text)
+                    # 存储原始类型和路径
+                    item.setData(Qt.ItemDataRole.UserRole, (result_type, result_path))
+                    # 设置完整的工具提示，包含描述
+                    item.setToolTip(f"{display_name}\n{description}\n\n路径: {result_path}")
                     self.preview_list.addItem(item)
                     items_added += 1
-            # Select the first result item by default
+
             if items_added > 0:
-                self.preview_list.setCurrentRow(0) # Select first result
+                self.preview_list.setCurrentRow(0)  # 默认选择第一个结果
+                # 触发显示第一个结果图像
+                first_item = self.preview_list.item(0)
+                if first_item:
+                    result_type, result_path = first_item.data(Qt.ItemDataRole.UserRole)
+                    self._display_result_image(self.current_image_path, result_type)
         else:
              logging.warning(f"[Viewer _populate_preview_list] Unknown mode: {mode}")
 
@@ -760,6 +825,42 @@ class ImageViewerWidget(QWidget):
         # Trigger view mode change if not already original
         self._set_view_mode(0) # This handles is_calibration_mode, controls visibility, redraw
 
+    def _add_result_title(self, result_type: str):
+        """在结果图像上添加标题显示"""
+        if not self.current_scene:
+            return
+
+        # 获取结果类型信息
+        type_info = self.RESULT_TYPE_INFO.get(result_type, {
+            'display_name': result_type,
+            'description': '未知结果类型'
+        })
+
+        # 创建标题文本
+        title = QGraphicsSimpleTextItem(type_info['display_name'])
+        title.setBrush(QColor(255, 255, 255))  # 白色文字
+        
+        # 设置字体
+        font = title.font()
+        font.setPointSize(14)
+        font.setBold(True)
+        title.setFont(font)
+        
+        # 计算位置（左上角，留出边距）
+        margin = 10
+        title.setPos(margin, margin)
+        
+        # 添加半透明背景
+        rect = title.boundingRect()
+        bg = QGraphicsRectItem(rect)
+        bg.setBrush(QColor(0, 0, 0, 180))  # 半透明黑色背景
+        bg.setPen(QPen(Qt.PenStyle.NoPen))  # 无边框
+        bg.setPos(margin, margin)
+        
+        # 按正确的顺序添加到场景
+        self.current_scene.addItem(bg)
+        self.current_scene.addItem(title)
+
     def _display_result_image(self, original_image_path: str, result_type: str):
         """显示指定类型的结果图像"""
         result_path_dict = self.result_image_map.get(original_image_path, {})
@@ -775,10 +876,10 @@ class ImageViewerWidget(QWidget):
         if not success:
             self._show_placeholder_scene(f"无法加载结果图像 ({result_type})\n{result_path}")
         else:
-             logging.info(f"[Viewer] Displaying result: {result_type} from {os.path.basename(result_path)}")
-             self.current_view_mode = 'result' # Ensure mode is set
-             # Optionally add overlay text indicating the result type being shown
-             # self._add_overlay_text(f"显示: {result_type}")
+            logging.info(f"[Viewer] Displaying result: {result_type} from {os.path.basename(result_path)}")
+            self.current_view_mode = 'result'
+            # 添加结果类型标题
+            self._add_result_title(result_type)
 
     def _show_placeholder_scene(self, message: str):
          """Displays a placeholder message in the graphics view."""

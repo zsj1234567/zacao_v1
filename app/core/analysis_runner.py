@@ -197,8 +197,13 @@ class AnalysisRunner(QObject):
                                     grass_height_m = height_results["草高(m)"]
                                     current_image_results["草地高度"] = f"{grass_height_m:.3f}m"
                                     self.log_message.emit(f"  Lidar 分析完成。草高: {grass_height_m:.3f}m")
-                                    current_image_results["地面高度"] = f"{height_results.get('地面高度(m)', 'N/A'):.3f}m"
-                                    current_image_results["最大高度点"] = f"{height_results.get('最大高度点(m)', 'N/A'):.3f}m"
+                                    
+                                    # 修复：添加类型检查，确保只对数值使用格式化
+                                    ground_height = height_results.get('地面高度(m)')
+                                    max_height = height_results.get('最大高度(m)')
+                                    
+                                    current_image_results["地面高度"] = f"{ground_height:.3f}m" if isinstance(ground_height, (int, float)) else "N/A"
+                                    current_image_results["最大高度点"] = f"{max_height:.3f}m" if isinstance(max_height, (int, float)) else "N/A"
                                 else:
                                     self.log_message.emit("  Lidar 分析未返回有效高度。")
                                     logging.warning(f"Lidar analysis for {lidar_file_path} did not return valid height.")
@@ -259,14 +264,44 @@ class AnalysisRunner(QObject):
             # --- Final Summary Saving ---
             # self.log_message.emit("--- 所有图像处理完成，正在保存分析摘要 ---") # Redundant
             all_generated_paths = []
+            
+            # 收集所有生成的图像路径
             for img_summary in all_image_summaries:
                 if img_summary.get("状态") == "成功":
+                    # 添加主要结果图路径
                     for key, value in img_summary.items():
                         if isinstance(value, str) and (key.endswith('_path') or key.endswith('_image')):
                             if os.path.exists(value):
                                 all_generated_paths.append(os.path.normpath(value))
                             else:
                                 logging.warning(f"摘要中的路径不存在，将忽略: {value}")
+            
+            # 添加原始图像路径
+            for img_path in input_paths:
+                if os.path.exists(img_path):
+                    all_generated_paths.append(os.path.normpath(img_path))
+            
+            # 添加HSV分析图像
+            hsv_analysis_files = [f for f in os.listdir(output_dir) if f.startswith('hsv_analysis_') and f.endswith('.png')]
+            for hsv_file in hsv_analysis_files:
+                hsv_path = os.path.join(output_dir, hsv_file)
+                if os.path.exists(hsv_path):
+                    all_generated_paths.append(os.path.normpath(hsv_path))
+            
+            # 添加LiDAR分析图像
+            lidar_analysis_files = [f for f in os.listdir(output_dir) if f.endswith('_height_analysis.png')]
+            for lidar_file in lidar_analysis_files:
+                lidar_path = os.path.join(output_dir, lidar_file)
+                if os.path.exists(lidar_path):
+                    all_generated_paths.append(os.path.normpath(lidar_path))
+            
+            # 添加所有调试图像
+            debug_files = [f for f in os.listdir(output_dir) if f.endswith('_debug.png')]
+            for debug_file in debug_files:
+                debug_path = os.path.join(output_dir, debug_file)
+                if os.path.exists(debug_path):
+                    all_generated_paths.append(os.path.normpath(debug_path))
+            
             all_generated_paths = sorted(list(set(all_generated_paths)))
             json_summary = {
                 "run_config": self.config,
