@@ -310,42 +310,7 @@ class PostgresManager:
             logging.error(f"解析激光数据失败: {str(e)}")
             raise
 
-    def visualize_ld_data(self, lid: int, output_dir: str = "output_images") -> str:
-        """
-        将激光检测数据可视化为深度图
-        
-        Args:
-            lid: 数据ID
-            output_dir: 输出目录
-            
-        Returns:
-            保存的文件路径
-        """
-        try:
-            # 确保输出目录存在
-            os.makedirs(output_dir, exist_ok=True)
-            
-            # 获取解析后的数据
-            _, _, Z = self.parse_ld_data(lid)
-            
-            # 归一化Z值到0-255范围
-            z_normalized = ((Z - Z.min()) * (255.0 / (Z.max() - Z.min()))).astype(np.uint8)
-            
-            # 创建深度图
-            depth_image = Image.fromarray(z_normalized)
-            
-            # 保存图片
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            filename = f"depth_map_{lid}_{timestamp}.png"
-            filepath = os.path.join(output_dir, filename)
-            depth_image.save(filepath)
-            
-            logging.info(f"深度图已保存到: {filepath}")
-            return filepath
-            
-        except Exception as e:
-            logging.error(f"生成深度图失败: {str(e)}")
-            raise
+
 
 class DataProcessor:
     """数据处理器：处理和整理从数据库获取的数据"""
@@ -361,6 +326,87 @@ class DataProcessor:
         self.db_manager = db_manager
         self.output_base_dir = output_base_dir
         self.setup_directories()
+        
+    def _remove_outliers(self, data: np.ndarray, percentile_low: float = 10, percentile_high: float = 90, 
+                        z_threshold: float = 3.0, method: str = 'combined') -> Tuple[np.ndarray, float, float]:
+        """
+        移除异常值，返回处理后的数据和有效数值范围
+        
+        Args:
+            data: 输入数据数组
+            percentile_low: 下限百分位数，默认10%
+            percentile_high: 上限百分位数，默认90%
+            z_threshold: Z分数阈值，超过此值的点被视为异常值(默认3.0)
+            method: 异常值检测方法，可选: 'percentile', 'z_score', 'iqr', 'combined'
+            
+        Returns:
+            Tuple[np.ndarray, float, float]: (处理后的数据，下限值，上限值)
+        """
+        # 创建数据副本以避免修改原始数据
+        data_filtered = data.copy()
+        data_flat = data.flatten()  # 用于统计计算
+        
+        if method == 'percentile' or method == 'combined':
+            # 百分位数法 - 适合处理有偏分布
+            p_low = np.percentile(data_flat, percentile_low)
+            p_high = np.percentile(data_flat, percentile_high)
+            
+            if method == 'percentile':
+                mask_percentile = (data < p_low) | (data > p_high)
+                data_filtered[mask_percentile] = np.nan  # 标记为NaN后面再处理
+                
+        if method == 'z_score' or method == 'combined':
+            # Z分数法 - 特别适合检测极端异常值
+            data_mean = np.mean(data_flat)
+            data_std = np.std(data_flat)
+            z_scores = np.abs((data - data_mean) / (data_std + 1e-10))  # 加小值避免除零
+            
+            if method == 'z_score':
+                mask_zscore = z_scores > z_threshold
+                data_filtered[mask_zscore] = np.nan
+                
+        if method == 'iqr' or method == 'combined':
+            # IQR法 - 鲁棒性好，不受极端值影响
+            q1 = np.percentile(data_flat, 25)
+            q3 = np.percentile(data_flat, 75)
+            iqr = q3 - q1
+            iqr_low = q1 - 1.5 * iqr
+            iqr_high = q3 + 1.5 * iqr
+            
+            if method == 'iqr':
+                mask_iqr = (data < iqr_low) | (data > iqr_high)
+                data_filtered[mask_iqr] = np.nan
+                
+        if method == 'combined':
+            # 综合检测法 - 结合上述三种方法的优点
+            # 1. 基于百分位数的宽松限制
+            # 2. Z分数检测极端异常值 
+            # 3. IQR法提供鲁棒性检测
+            mask_percentile = (data < p_low) | (data > p_high)
+            mask_zscore = z_scores > z_threshold
+            mask_iqr = (data < iqr_low) | (data > iqr_high)
+            
+            # 只要符合任一条件就认为是异常值
+            mask_combined = mask_percentile | mask_zscore | mask_iqr
+            data_filtered[mask_combined] = np.nan
+        
+        # 计算有效范围，用于设置热图色标范围
+        valid_data = data_filtered[~np.isnan(data_filtered)]
+        if len(valid_data) > 0:
+            valid_min = np.min(valid_data)
+            valid_max = np.max(valid_data)
+        else:
+            valid_min = np.min(data)
+            valid_max = np.max(data)
+            
+        # 二次处理：将NaN替换为最近有效值或者边界值
+        # 这样在可视化时不会出现空白区域
+        if np.any(np.isnan(data_filtered)):
+            nan_mask = np.isnan(data_filtered)
+            data_filtered[nan_mask] = np.clip(data[nan_mask], valid_min, valid_max)
+        
+        # 返回过滤后的数据以及有效值范围
+        return data_filtered, valid_min, valid_max
         
     def setup_directories(self):
         """创建必要的输出目录"""
@@ -482,12 +528,76 @@ class DataProcessor:
                 # 解析激光数据
                 X, Y, Z = self.db_manager.parse_ld_data(lid)
                 
-                # 保存为深度图
-                depth_map_path = self.db_manager.visualize_ld_data(
-                    lid,
-                    output_dir=self.dirs['depth_maps']
+                # 处理异常值 - 使用综合方法
+                Z_filtered, z_min, z_max = self._remove_outliers(
+                    Z, percentile_low=10, percentile_high=90,
+                    z_threshold=3.0, method='combined'
                 )
-                logging.info(f"保存深度图: {depth_map_path}")
+                
+                # 获取并保存统计信息
+                stats = {
+                    'lid': lid,
+                    'original_data': {
+                        'x_range': (float(X.min()), float(X.max())),
+                        'y_range': (float(Y.min()), float(Y.max())),
+                        'z_range': (float(Z.min()), float(Z.max())),
+                        'z_mean': float(Z.mean()),
+                        'z_std': float(Z.std()),
+                        'z_median': float(np.median(Z)),
+                        'z_q1': float(np.percentile(Z, 25)),
+                        'z_q3': float(np.percentile(Z, 75)),
+                        'z_iqr': float(np.percentile(Z, 75) - np.percentile(Z, 25))
+                    },
+                    'filtered_data': {
+                        'x_range': (float(X.min()), float(X.max())),
+                        'y_range': (float(Y.min()), float(Y.max())),
+                        'z_range': (float(z_min), float(z_max)),
+                        'z_mean': float(np.nanmean(Z_filtered)),
+                        'z_std': float(np.nanstd(Z_filtered)),
+                        'z_median': float(np.nanmedian(Z_filtered)),
+                        'z_q1': float(np.nanpercentile(Z_filtered, 25)),
+                        'z_q3': float(np.nanpercentile(Z_filtered, 75)),
+                        'z_iqr': float(np.nanpercentile(Z_filtered, 75) - np.nanpercentile(Z_filtered, 25)),
+                        'z_height': float(z_max - np.nanmean(Z_filtered))
+                    },
+                    'shape': {
+                        'rows': Z.shape[0],
+                        'cols': Z.shape[1],
+                        'total_points': Z.size
+                    },
+                    'outlier_info': {
+                        'outlier_count': int(np.sum(np.isnan(Z_filtered))),
+                        'outlier_percent': float(np.sum(np.isnan(Z_filtered)) / Z.size * 100)
+                    }
+                }
+                
+                # 保存统计信息为JSON
+                stats_file = os.path.join(
+                    self.dirs['json'],
+                    f"ld_stats_{lid}.json"
+                )
+                with open(stats_file, 'w') as f:
+                    json.dump(stats, f, indent=4)
+                
+                # 保存为深度图
+                # 创建深度图
+                z_normalized = ((Z - Z.min()) * (255.0 / (Z.max() - Z.min()))).astype(np.uint8)
+                z_filtered_normalized = ((Z_filtered - z_min) * (255.0 / (z_max - z_min))).astype(np.uint8)
+                
+                # 创建并保存原始深度图
+                depth_image = Image.fromarray(z_normalized)
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"depth_map_{lid}_{timestamp}.png"
+                filepath = os.path.join(self.dirs['depth_maps'], filename)
+                depth_image.save(filepath)
+                
+                # 创建并保存过滤后的深度图
+                depth_image_filtered = Image.fromarray(z_filtered_normalized)
+                filename_filtered = f"depth_map_filtered_{lid}_{timestamp}.png"
+                filepath_filtered = os.path.join(self.dirs['depth_maps'], filename_filtered)
+                depth_image_filtered.save(filepath_filtered)
+                
+                logging.info(f"深度图已保存到: {filepath} 和 {filepath_filtered}")
                 
                 # 保存原始点云数据为CSV (每个点的X,Y,Z值)
                 pointcloud_data = []
@@ -499,7 +609,8 @@ class DataProcessor:
                             'col': j,
                             'x': X[i, j],
                             'y': Y[i, j],
-                            'z': Z[i, j]
+                            'z': Z[i, j],
+                            'z_filtered': Z_filtered[i, j]
                         })
                 
                 # 将点云数据保存为CSV
@@ -509,33 +620,10 @@ class DataProcessor:
                 logging.info(f"点云数据已保存到: {pc_path}")
                 
                 # 创建3D可视化图 (散点图)
-                self._create_3d_scatter_plot(X, Y, Z, lid, self.dirs['3d_plots'])
+                self._create_3d_scatter_plot(X, Y, Z, Z_filtered, lid, self.dirs['3d_plots'])
                 
                 # 创建热图 (俯视图)
-                self._create_heatmap(Z, lid, self.dirs['heatmaps'])
-                
-                # 获取并保存统计信息
-                stats = {
-                    'lid': lid,
-                    'x_range': (float(X.min()), float(X.max())),
-                    'y_range': (float(Y.min()), float(Y.max())),
-                    'z_range': (float(Z.min()), float(Z.max())),
-                    'z_mean': float(Z.mean()),
-                    'z_std': float(Z.std()),
-                    'shape': {
-                        'rows': Z.shape[0],
-                        'cols': Z.shape[1],
-                        'total_points': Z.size
-                    }
-                }
-                
-                # 保存统计信息为JSON
-                stats_file = os.path.join(
-                    self.dirs['json'],
-                    f"ld_stats_{lid}.json"
-                )
-                with open(stats_file, 'w') as f:
-                    json.dump(stats, f, indent=4)
+                self._create_heatmap(Z, Z_filtered, lid, self.dirs['heatmaps'])
                 
             except Exception as e:
                 logging.error(f"处理LD数据失败 (lid={lid}): {str(e)}")
@@ -548,88 +636,9 @@ class DataProcessor:
         
         return df_ld
         
-    def _remove_outliers(self, data: np.ndarray, percentile_low: float = 10, percentile_high: float = 90, 
-                        z_threshold: float = 3.0, method: str = 'combined') -> Tuple[np.ndarray, float, float]:
-        """
-        移除异常值，返回处理后的数据和有效数值范围
-        
-        Args:
-            data: 输入数据数组
-            percentile_low: 下限百分位数，默认10%
-            percentile_high: 上限百分位数，默认90%
-            z_threshold: Z分数阈值，超过此值的点被视为异常值(默认3.0)
-            method: 异常值检测方法，可选: 'percentile', 'z_score', 'iqr', 'combined'
-            
-        Returns:
-            Tuple[np.ndarray, float, float]: (处理后的数据，下限值，上限值)
-        """
-        # 创建数据副本以避免修改原始数据
-        data_filtered = data.copy()
-        data_flat = data.flatten()  # 用于统计计算
-        
-        if method == 'percentile' or method == 'combined':
-            # 百分位数法 - 适合处理有偏分布
-            p_low = np.percentile(data_flat, percentile_low)
-            p_high = np.percentile(data_flat, percentile_high)
-            
-            if method == 'percentile':
-                mask_percentile = (data < p_low) | (data > p_high)
-                data_filtered[mask_percentile] = np.nan  # 标记为NaN后面再处理
-                
-        if method == 'z_score' or method == 'combined':
-            # Z分数法 - 特别适合检测极端异常值
-            data_mean = np.mean(data_flat)
-            data_std = np.std(data_flat)
-            z_scores = np.abs((data - data_mean) / (data_std + 1e-10))  # 加小值避免除零
-            
-            if method == 'z_score':
-                mask_zscore = z_scores > z_threshold
-                data_filtered[mask_zscore] = np.nan
-                
-        if method == 'iqr' or method == 'combined':
-            # IQR法 - 鲁棒性好，不受极端值影响
-            q1 = np.percentile(data_flat, 25)
-            q3 = np.percentile(data_flat, 75)
-            iqr = q3 - q1
-            iqr_low = q1 - 1.5 * iqr
-            iqr_high = q3 + 1.5 * iqr
-            
-            if method == 'iqr':
-                mask_iqr = (data < iqr_low) | (data > iqr_high)
-                data_filtered[mask_iqr] = np.nan
-                
-        if method == 'combined':
-            # 综合检测法 - 结合上述三种方法的优点
-            # 1. 基于百分位数的宽松限制
-            # 2. Z分数检测极端异常值 
-            # 3. IQR法提供鲁棒性检测
-            mask_percentile = (data < p_low) | (data > p_high)
-            mask_zscore = z_scores > z_threshold
-            mask_iqr = (data < iqr_low) | (data > iqr_high)
-            
-            # 只要符合任一条件就认为是异常值
-            mask_combined = mask_percentile | mask_zscore | mask_iqr
-            data_filtered[mask_combined] = np.nan
-        
-        # 计算有效范围，用于设置热图色标范围
-        valid_data = data_filtered[~np.isnan(data_filtered)]
-        if len(valid_data) > 0:
-            valid_min = np.min(valid_data)
-            valid_max = np.max(valid_data)
-        else:
-            valid_min = np.min(data)
-            valid_max = np.max(data)
-            
-        # 二次处理：将NaN替换为最近有效值或者边界值
-        # 这样在可视化时不会出现空白区域
-        if np.any(np.isnan(data_filtered)):
-            nan_mask = np.isnan(data_filtered)
-            data_filtered[nan_mask] = np.clip(data[nan_mask], valid_min, valid_max)
-        
-        # 返回过滤后的数据以及有效值范围
-        return data_filtered, valid_min, valid_max
 
-    def _create_3d_scatter_plot(self, X: np.ndarray, Y: np.ndarray, Z: np.ndarray, 
+
+    def _create_3d_scatter_plot(self, X: np.ndarray, Y: np.ndarray, Z: np.ndarray, Z_filtered: np.ndarray,
                               lid: int, output_dir: str):
         """创建3D散点图可视化"""
         try:
@@ -647,12 +656,16 @@ class DataProcessor:
             xs = X[::step, ::step].flatten()
             ys = Y[::step, ::step].flatten()
             zs = Z[::step, ::step].flatten()
+            zs_filtered = Z_filtered[::step, ::step].flatten()
             
-            # 异常值处理 - 使用综合方法
-            zs_filtered, z_min, z_max = self._remove_outliers(
-                zs, percentile_low=10, percentile_high=90, 
-                z_threshold=3.0, method='combined'
-            )
+            # 获取过滤后数据的有效值范围
+            valid_data = Z_filtered[~np.isnan(Z_filtered)]
+            if len(valid_data) > 0:
+                z_min = np.min(valid_data)
+                z_max = np.max(valid_data)
+            else:
+                z_min = np.min(Z)
+                z_max = np.max(Z)
             
             # === 左侧图：处理异常值后的数据 ===
             norm_filtered = plt.Normalize(z_min, z_max)
@@ -707,17 +720,21 @@ class DataProcessor:
             logging.error(f"创建3D散点图失败: {str(e)}")
             logging.exception("详细错误信息")
     
-    def _create_heatmap(self, Z: np.ndarray, lid: int, output_dir: str):
+    def _create_heatmap(self, Z: np.ndarray, Z_filtered: np.ndarray,
+                         lid: int, output_dir: str):
         """创建热力图可视化"""
         try:
             # 创建更美观的热力图，2x1布局
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 8), dpi=100)
             
-            # 处理异常值 - 使用综合方法
-            Z_filtered, z_min, z_max = self._remove_outliers(
-                Z, percentile_low=10, percentile_high=90,
-                z_threshold=3.0, method='combined'
-            )
+            # 获取过滤后数据的有效值范围
+            valid_data = Z_filtered[~np.isnan(Z_filtered)]
+            if len(valid_data) > 0:
+                z_min = np.min(valid_data)
+                z_max = np.max(valid_data)
+            else:
+                z_min = np.min(Z)
+                z_max = np.max(Z)
             
             # === 左侧：处理异常值后的热力图 ===
             im1 = ax1.imshow(Z_filtered, cmap='jet', interpolation='bilinear', aspect='auto', 
@@ -912,6 +929,90 @@ class DataProcessor:
     def generate_summary_report(self, df_atm: pd.DataFrame, df_jpeg: pd.DataFrame,
                               df_ptm: pd.DataFrame, df_ld: pd.DataFrame):
         """生成数据汇总报告"""
+        # 收集所有LD统计数据
+        ld_stats_files = [f for f in os.listdir(self.dirs['json']) if f.startswith('ld_stats_')]
+        ld_stats_list = []
+        
+        for stats_file in ld_stats_files:
+            try:
+                with open(os.path.join(self.dirs['json'], stats_file), 'r') as f:
+                    stats_data = json.load(f)
+                    ld_stats_list.append(stats_data)
+            except Exception as e:
+                logging.error(f"读取统计文件失败 {stats_file}: {str(e)}")
+        
+        # 计算激光雷达数据的汇总统计信息
+        ld_summary = {}
+        if ld_stats_list:
+            # 初始化汇总数据结构
+            ld_summary = {
+                'original_data': {
+                    'z_mean_avg': 0.0,
+                    'z_std_avg': 0.0,
+                    'z_median_avg': 0.0,
+                    'z_min': float('inf'),
+                    'z_max': float('-inf')
+                },
+                'filtered_data': {
+                    'z_mean_avg': 0.0,
+                    'z_std_avg': 0.0,
+                    'z_median_avg': 0.0,
+                    'z_min': float('inf'),
+                    'z_max': float('-inf')
+                },
+                'outlier_info': {
+                    'avg_outlier_percent': 0.0,
+                    'max_outlier_percent': 0.0,
+                    'min_outlier_percent': 100.0
+                },
+                'total_records': len(ld_stats_list)
+            }
+            
+            # 累加统计值
+            for stats in ld_stats_list:
+                # 原始数据统计
+                orig = stats.get('original_data', {})
+                ld_summary['original_data']['z_mean_avg'] += orig.get('z_mean', 0)
+                ld_summary['original_data']['z_std_avg'] += orig.get('z_std', 0)
+                ld_summary['original_data']['z_median_avg'] += orig.get('z_median', 0)
+                
+                if 'z_range' in orig:
+                    ld_summary['original_data']['z_min'] = min(ld_summary['original_data']['z_min'], orig['z_range'][0])
+                    ld_summary['original_data']['z_max'] = max(ld_summary['original_data']['z_max'], orig['z_range'][1])
+                
+                # 过滤数据统计
+                filt = stats.get('filtered_data', {})
+                ld_summary['filtered_data']['z_mean_avg'] += filt.get('z_mean', 0)
+                ld_summary['filtered_data']['z_std_avg'] += filt.get('z_std', 0)
+                ld_summary['filtered_data']['z_median_avg'] += filt.get('z_median', 0)
+                
+                if 'z_range' in filt:
+                    ld_summary['filtered_data']['z_min'] = min(ld_summary['filtered_data']['z_min'], filt['z_range'][0])
+                    ld_summary['filtered_data']['z_max'] = max(ld_summary['filtered_data']['z_max'], filt['z_range'][1])
+                
+                # 异常值信息
+                outlier = stats.get('outlier_info', {})
+                outlier_percent = outlier.get('outlier_percent', 0)
+                ld_summary['outlier_info']['avg_outlier_percent'] += outlier_percent
+                ld_summary['outlier_info']['max_outlier_percent'] = max(
+                    ld_summary['outlier_info']['max_outlier_percent'], outlier_percent
+                )
+                ld_summary['outlier_info']['min_outlier_percent'] = min(
+                    ld_summary['outlier_info']['min_outlier_percent'], outlier_percent
+                )
+            
+            # 计算平均值
+            count = len(ld_stats_list)
+            if count > 0:
+                ld_summary['original_data']['z_mean_avg'] /= count
+                ld_summary['original_data']['z_std_avg'] /= count
+                ld_summary['original_data']['z_median_avg'] /= count
+                ld_summary['filtered_data']['z_mean_avg'] /= count
+                ld_summary['filtered_data']['z_std_avg'] /= count
+                ld_summary['filtered_data']['z_median_avg'] /= count
+                ld_summary['outlier_info']['avg_outlier_percent'] /= count
+        
+        # 基本报告信息
         report = {
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'data_counts': {
@@ -922,18 +1023,19 @@ class DataProcessor:
             },
             'time_range': {
                 'start': min(
-                    df_atm['lct'].min(),
-                    df_jpeg['lct'].min(),
-                    df_ptm['lct'].min(),
-                    df_ld['lct'].min()
+                    df_atm['lct'].min() if not df_atm.empty else datetime.now(),
+                    df_jpeg['lct'].min() if not df_jpeg.empty else datetime.now(),
+                    df_ptm['lct'].min() if not df_ptm.empty else datetime.now(),
+                    df_ld['lct'].min() if not df_ld.empty else datetime.now()
                 ).strftime('%Y-%m-%d %H:%M:%S'),
                 'end': max(
-                    df_atm['lct'].max(),
-                    df_jpeg['lct'].max(),
-                    df_ptm['lct'].max(),
-                    df_ld['lct'].max()
+                    df_atm['lct'].max() if not df_atm.empty else datetime.now(),
+                    df_jpeg['lct'].max() if not df_jpeg.empty else datetime.now(),
+                    df_ptm['lct'].max() if not df_ptm.empty else datetime.now(),
+                    df_ld['lct'].max() if not df_ld.empty else datetime.now()
                 ).strftime('%Y-%m-%d %H:%M:%S')
-            }
+            },
+            'lidar_data_summary': ld_summary
         }
         
         # 保存报告

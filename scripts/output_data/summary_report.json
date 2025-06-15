@@ -1,5 +1,5 @@
 {
-    "timestamp": "2025-06-15 18:01:11",
+    "timestamp": "2025-06-15 19:12:38",
     "data_counts": {
         "atm_records": 10,
         "jpeg_records": 3,
@@ -9,5 +9,27 @@
     "time_range": {
         "start": "2025-05-30 11:25:05",
         "end": "2025-05-30 13:50:31"
+    },
+    "lidar_data_summary": {
+        "original_data": {
+            "z_mean_avg": 3546.642333984375,
+            "z_std_avg": 9979.419108072916,
+            "z_median_avg": 1775.5,
+            "z_min": 1241.0,
+            "z_max": 65300.0
+        },
+        "filtered_data": {
+            "z_mean_avg": 1772.0924886067708,
+            "z_std_avg": 77.31190745035808,
+            "z_median_avg": 1775.5,
+            "z_min": 1457.0,
+            "z_max": 2013.0
+        },
+        "outlier_info": {
+            "avg_outlier_percent": 0.0,
+            "max_outlier_percent": 0.0,
+            "min_outlier_percent": 0.0
+        },
+        "total_records": 3
     }
 }

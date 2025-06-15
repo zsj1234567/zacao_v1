@@ -78,11 +78,32 @@ class MainWindow(QMainWindow):
 
         # --- 左侧: 配置面板 ---
         self.config_widget = QWidget()
+        self.config_widget.setMinimumWidth(450)  # 设置最小宽度
+        self.config_widget.setMaximumWidth(1200)  # 设置最大宽度
         self.config_layout = QVBoxLayout(self.config_widget)
-        self.config_layout.setSpacing(15)
+        self.config_layout.setSpacing(8)  # 减少组件间距
         self.config_layout.setContentsMargins(0, 0, 0, 0) # 移除边距，由父布局控制
         # Add config widget to the main splitter
         self.main_splitter.addWidget(self.config_widget)
+
+        # 设置分割器样式和属性
+        self.main_splitter.setHandleWidth(3)  # 增加手柄宽度，更容易拖动
+        self.main_splitter.setStyleSheet("""
+            QSplitter::handle {
+                background-color: #666666;
+                border: 1px solid #333333;
+                border-radius: 0px;
+                margin: 0px;
+            }
+            QSplitter::handle:hover {
+                background-color: #888888;
+                border: 1px solid #2a82da;
+            }
+            QSplitter::handle:pressed {
+                background-color: #2a82da;
+                border: 1px solid #2a82da;
+            }
+        """)
 
         # --- 顶部: 输入和输出选择 ---
         io_group = QGroupBox("输入与输出")
@@ -331,19 +352,25 @@ class MainWindow(QMainWindow):
 
         # --- Set Initial Splitter Sizes --- #
         # Adjust main splitter sizes
-        total_width = self.sizeHint().width() # Use sizeHint for initial estimate
-        config_width = int(total_width * 0.30) # Config panel takes ~30%
+        total_width = self.width() # 使用实际窗口宽度
+        config_width = 280  # 设置固定的初始配置面板宽度
         viewer_width = total_width - config_width
 
         self.main_splitter.setSizes([config_width, viewer_width])
 
-        # Viewer internal splitter sizes are handled within ImageViewerWidget if it uses one,
-        # or its internal layout stretch factors.
-        # self.viewer_splitter.setSizes([preview_width, graphics_view_width]) # Removed
+        # 设置分割器的拉伸行为
+        self.main_splitter.setStretchFactor(0, 0)  # 配置面板不自动拉伸
+        self.main_splitter.setStretchFactor(1, 1)  # 图像视图自动拉伸填充剩余空间
+        
+        # 允许完全折叠配置面板，但不允许折叠图像视图
+        self.main_splitter.setCollapsible(0, True)  # 允许完全折叠配置面板
+        self.main_splitter.setCollapsible(1, False)  # 禁止完全折叠图像视图
 
-        # Optional: Set stretch factors for the main splitter
-        self.main_splitter.setStretchFactor(0, 0) # Config panel doesn't stretch as much
-        self.main_splitter.setStretchFactor(1, 1) # Viewer panel takes remaining space
+        # 连接分割器移动信号
+        self.main_splitter.splitterMoved.connect(self.handle_splitter_moved)
+        
+        # 记录配置面板的默认宽度，用于恢复显示
+        self.default_config_width = config_width
 
         # Hide config panel if size becomes very small (optional)
         # self.main_splitter.splitterMoved.connect(self.handle_splitter_move)
@@ -389,30 +416,31 @@ class MainWindow(QMainWindow):
             }
             QGroupBox {
                 border: 1px solid #666; /* Slightly lighter border */
-                border-radius: 5px;
+                border-radius: 4px;
                 margin-top: 1ex; /* leave space at the top for the title */
-                padding: 10px 5px 5px 5px; /* top, right, bottom, left */
+                padding: 8px 4px 4px 4px; /* 减小内边距: top, right, bottom, left */
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
                 padding: 0 3px;
-                left: 10px; /* Align title slightly from the left edge */
+                left: 7px; /* Align title slightly from the left edge */
+                font-size: 9.5pt; /* 稍微缩小标题字体 */
             }
             QPushButton {
                 min-height: 16px; /* Ensure buttons are not too small */
-                padding: 5px 15px; /* Increased padding */
-                border-radius: 4px; /* Slightly more rounded */
+                padding: 3px 12px; /* 减小内边距 */
+                border-radius: 3px; /* 减小圆角 */
                 /* background-color gets set by palette */
             }
             QPushButton:checked {
                 background-color: #6a6a6a; /* Darker when checked (for view buttons) */
                 border: 1px solid #888;
             }
-            QLineEdit, QDoubleSpinBox, QSpinBox {
-                min-height: 25px;
-                border-radius: 3px;
-                padding: 1px 5px;
+            QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox {
+                min-height: 22px; /* 减小高度 */
+                border-radius: 2px;
+                padding: 1px 4px;
             }
             QListWidget {
                 border-radius: 0px;
@@ -421,17 +449,20 @@ class MainWindow(QMainWindow):
                 background-color: #444;
             }
             QSplitter::handle:horizontal {
-                width: 3px;
+                width: 1px;
             }
             QSplitter::handle:vertical {
-                height: 3px;
+                height: 1px;
+            }
+            QSplitter::handle:hover {
+                background-color: #2a82da;
             }
             /* Less prominent Start/Stop buttons */
             QPushButton#start_button {
                 background-color: #4682B4; /* Steel Blue */
                 color: white;
-                min-height: 24px; /* Further reduced height */
-                padding: 5px 15px;
+                min-height: 22px;
+                padding: 3px 12px;
             }
             QPushButton#start_button:hover { background-color: #5A9BD5; }
             QPushButton#start_button:pressed { background-color: #3E70A0; }
@@ -440,8 +471,8 @@ class MainWindow(QMainWindow):
             QPushButton#stop_button {
                 background-color: #C85C5C; /* Soft Red */
                 color: white;
-                min-height: 28px; /* Further reduced height */
-                padding: 5px 15px;
+                min-height: 22px;
+                padding: 3px 12px;
             }
             QPushButton#stop_button:hover { background-color: #DA7F7F; }
             QPushButton#stop_button:pressed { background-color: #B84B4B; }
@@ -449,12 +480,12 @@ class MainWindow(QMainWindow):
 
             /* Nicer CheckBox */
             QCheckBox {
-                spacing: 8px; /* Space between indicator and text */
+                spacing: 6px; /* 减小间距 */
             }
             QCheckBox::indicator {
-                width: 12px; /* Slightly smaller */
-                height: 12px; /* Slightly smaller */
-                border-radius: 4px;
+                width: 12px;
+                height: 12px;
+                border-radius: 3px;
                 border: 1px solid #888;
                 background-color: #444; /* Slightly lighter than base for visibility */
             }
@@ -472,7 +503,7 @@ class MainWindow(QMainWindow):
             QGroupBox::indicator {
                 width: 12px;
                 height: 12px;
-                border-radius: 4px;
+                border-radius: 3px;
                 border: 1px solid #888;
                 background-color: #444;
             }
@@ -501,7 +532,7 @@ class MainWindow(QMainWindow):
             /* Style for Browse buttons */
             QPushButton#browse_button {
                 border: 1px solid #666;
-                padding: 3px 8px; /* Smaller padding */
+                padding: 2px 6px; /* 减小内边距 */
                 min-height: 16px; /* Match other inputs */
                 background-color: #555;
             }
@@ -513,10 +544,15 @@ class MainWindow(QMainWindow):
                  background-color: rgba(66, 135, 245, 100); /* Semi-transparent light blue */
                  color: white; /* Ensure text stays white */
                  border: 1px solid #55aaff; /* Add a border for clarity */
-                 border-radius: 3px;
+                 border-radius: 2px;
             }
             QListWidget::item:selected:!active {
                  background-color: rgba(66, 135, 245, 80); /* Slightly less prominent when not active */
+            }
+            
+            /* 设置表单布局标签和字段的间距 */
+            QFormLayout {
+                spacing: 4px; /* 减小行间距 */
             }
         """)
 
@@ -1345,6 +1381,15 @@ class MainWindow(QMainWindow):
             self.append_log(error_msg)
             logging.error(traceback.format_exc())
             QMessageBox.critical(self, "错误", error_msg)
+
+    def handle_splitter_moved(self, pos, index):
+        """处理分割器移动事件"""
+        if index == 1:  # 第一个分割器
+            sizes = self.main_splitter.sizes()
+            if sizes[0] < 50:  # 如果配置面板宽度小于50像素
+                self.main_splitter.setSizes([0, sum(sizes)])  # 完全隐藏配置面板
+            elif sizes[0] < 200:  # 如果宽度小于最小宽度
+                self.main_splitter.setSizes([200, sizes[1] + (sizes[0] - 200)])  # 设置为最小宽度
 
 # # --- 用于测试 --- #
 # if __name__ == '__main__':
