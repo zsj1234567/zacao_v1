@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QGraphicsView, QGraphicsScene, QPushButton, QSizePolicy, QMessageBox,
     QButtonGroup, QGraphicsEllipseItem, QGraphicsLineItem, QGraphicsSimpleTextItem, QGraphicsRectItem
 )
-from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QImage, QIcon
+from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QImage, QIcon, QTransform
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QPointF
 import numpy as np
 import cv2
@@ -125,12 +125,22 @@ class ImageViewerWidget(QWidget):
 
         # 主视图 (QGraphicsView 不变)
         self.graphics_view = QGraphicsView()
+        # 设置渲染提示
         self.graphics_view.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.graphics_view.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        self.graphics_view.setStyleSheet("QGraphicsView { border: 1px solid #555; }" ) # Add border
-        self.graphics_view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag) # 允许拖动
+        self.graphics_view.setStyleSheet("QGraphicsView { border: 1px solid #555; }" )
+        
+        # 设置拖动和缩放行为
+        self.graphics_view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.graphics_view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.graphics_view.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.graphics_view.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)  # 改为以视图中心为锚点
+        self.graphics_view.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        
+        # 设置滚动条策略
+        self.graphics_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.graphics_view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        # 设置大小策略
         self.graphics_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         center_layout.addWidget(self.graphics_view)
 
@@ -262,7 +272,13 @@ class ImageViewerWidget(QWidget):
 
         if full_pixmap:
             self.current_pixmap_item = self.current_scene.addPixmap(full_pixmap)
+            # 重置变换（使用新的单位矩阵替代reset方法）
+            self.graphics_view.setTransform(QTransform())
+            # 调整视图以适应图像并保持纵横比
             self.graphics_view.fitInView(self.current_pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+            # 确保图像居中
+            self.graphics_view.centerOn(self.current_pixmap_item.boundingRect().center())
+            # 更新场景和视图
             self.current_scene.update()
             self.graphics_view.viewport().update()
             return True
@@ -972,48 +988,77 @@ class ImageViewerWidget(QWidget):
 
     # --- Bug Fix 2: Add wheelEvent for zooming --- #
     def wheelEvent(self, event):
-        """处理鼠标滚轮事件，实现以鼠标位置为中心点的图像缩放"""
+        """处理鼠标滚轮事件，实现图像缩放和自动居中"""
         # 在校准模式下不允许缩放
         if self.is_calibration_mode:
             super().wheelEvent(event)
             return
 
         # 检查是否有图像加载
-        if self.current_pixmap_item is None:
+        if not self.current_pixmap_item or not self.current_scene:
             super().wheelEvent(event)
             return
 
-        # 设置变换锚点为鼠标位置
-        self.graphics_view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
-        self.graphics_view.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        # 按住Ctrl键时才进行滚动，否则进行缩放
+        if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            super().wheelEvent(event)
+            return
+
+        # 获取当前视图和场景的几何信息
+        view_rect = self.graphics_view.viewport().rect()
+        scene_rect = self.current_scene.sceneRect()
 
         # 缩放因子
         zoom_factor = 1.15  # 15% 缩放步长
         
-        # 获取当前视图的变换矩阵
-        old_pos = self.graphics_view.mapToScene(event.position().toPoint())
+        # 获取鼠标位置和对应的场景位置
+        mouse_pos = event.position().toPoint()
+        old_pos = self.graphics_view.mapToScene(mouse_pos)
         
         # 根据滚轮方向确定缩放方向
         angle = event.angleDelta().y()
         if angle > 0:
-            # 放大
-            scale_factor = zoom_factor
+            scale_factor = zoom_factor  # 放大
         else:
-            # 缩小
-            scale_factor = 1.0 / zoom_factor
+            scale_factor = 1.0 / zoom_factor  # 缩小
+
+        # 获取当前变换
+        current_transform = self.graphics_view.transform()
+        new_transform = current_transform.scale(scale_factor, scale_factor)
+        
+        # 计算缩放后的场景矩形
+        mapped_rect = new_transform.mapRect(scene_rect)
+        
+        # 检查缩放是否在合理范围内（防止过分缩小或放大）
+        view_width = view_rect.width()
+        view_height = view_rect.height()
+        
+        # 限制最小缩放：图像至少占视图的20%
+        min_scale = max(view_width * 0.2 / scene_rect.width(),
+                       view_height * 0.2 / scene_rect.height())
+        # 限制最大缩放：图像最大放大到原始尺寸的5倍
+        max_scale = 5.0
+        
+        new_scale = new_transform.m11()  # 获取新的缩放比例
+        
+        # 如果缩放在合理范围内，应用缩放
+        if min_scale <= new_scale <= max_scale:
+            # 应用缩放
+            self.graphics_view.setTransform(new_transform)
             
-        # 应用缩放
-        self.graphics_view.scale(scale_factor, scale_factor)
+            # 获取缩放后的场景位置
+            new_pos = self.graphics_view.mapToScene(mouse_pos)
+            
+            # 计算并应用位置调整
+            delta = new_pos - old_pos
+            self.graphics_view.translate(delta.x(), delta.y())
+            
+            # 如果缩放后图像小于视图大小，则居中显示
+            if mapped_rect.width() < view_width or mapped_rect.height() < view_height:
+                self.graphics_view.centerOn(scene_rect.center())
         
-        # 获取缩放后的位置
-        new_pos = self.graphics_view.mapToScene(event.position().toPoint())
-        
-        # 计算位置差，并调整视图以保持鼠标位置不变
-        delta = new_pos - old_pos
-        self.graphics_view.translate(delta.x(), delta.y())
-        
-        # 更新视图
-        self.graphics_view.viewport().update()
+        # 阻止事件继续传播
+        event.accept()
         # --- End Bug Fix 2 ---
 
 # Example usage (for testing)
