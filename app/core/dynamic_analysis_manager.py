@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+import json
 from PyQt6.QtCore import QObject, QThread, pyqtSignal, QTimer
 from app.core.analyzed_files_tracker import AnalyzedFilesTracker
 from app.core.analysis_runner import AnalysisRunner
@@ -136,6 +137,38 @@ class DynamicAnalysisManager(QObject):
         analysis_config = self.config.copy()
         analysis_config['input_paths'] = [file_path]
         
+        # 处理校准模式
+        if analysis_config.get('do_calibration', False):
+            calibration_mode = analysis_config.get('calibration_mode', 'manual')
+            logging.info(f"使用校准模式: {calibration_mode}")
+            
+            # 检查校准文件是否存在
+            calib_file = self._get_calibration_file_path(file_path)
+            if os.path.exists(calib_file):
+                try:
+                    with open(calib_file, 'r') as f:
+                        points = json.load(f)
+                        if isinstance(points, list) and len(points) == 4:
+                            # 添加校准数据到配置
+                            if 'calibration_data' not in analysis_config:
+                                analysis_config['calibration_data'] = {}
+                            analysis_config['calibration_data'][file_path] = points
+                            logging.info(f"已加载校准点: {points}")
+                        else:
+                            logging.warning(f"校准文件 {os.path.basename(calib_file)} 格式无效")
+                except Exception as e:
+                    logging.error(f"加载校准文件出错: {e}")
+            else:
+                logging.info(f"未找到校准文件: {calib_file}")
+                # 如果是自动校准模式，可以在这里添加自动校准的代码
+                if calibration_mode == 'auto':
+                    logging.info("使用自动校准模式，跳过手动校准步骤")
+                    # 这里可以添加自动校准的代码
+                    # 目前先留空，直接进入分析流程
+                else:
+                    # 手动模式但没有校准文件，发出警告
+                    logging.warning("手动校准模式下未找到校准文件，将使用原始尺寸")
+        
         # 创建分析线程和运行器
         self.current_analysis_thread = QThread()
         self.current_analysis_runner = AnalysisRunner(analysis_config)
@@ -214,3 +247,16 @@ class DynamicAnalysisManager(QObject):
             int: 已分析文件数量
         """
         return len(self.files_tracker.get_analyzed_files()) 
+        
+    def _get_calibration_file_path(self, image_path):
+        """
+        获取给定图像对应的校准文件路径
+        将校准文件保存在图片所在目录下的 calibrations 文件夹中
+        """
+        # 获取图片所在目录
+        image_dir = os.path.dirname(image_path)
+        # 在图片目录下创建 calibrations 文件夹
+        calib_dir = os.path.join(image_dir, 'calibrations')
+        
+        img_basename = os.path.splitext(os.path.basename(image_path))[0]
+        return os.path.join(calib_dir, f"{img_basename}.json")

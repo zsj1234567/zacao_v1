@@ -5,9 +5,9 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QMainWindow, QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QFileDialog, QProgressBar, QTextEdit, QComboBox,
-    QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox, QMessageBox, QSizePolicy, QStyleFactory, QSplitter
+    QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox, QMessageBox, QSizePolicy, QStyleFactory, QSplitter, QRadioButton
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QPalette, QColor, QFont
 import json # For calibration saving/loading
 
@@ -52,6 +52,14 @@ class MainWindow(QMainWindow):
         # 初始化动态分析管理器
         self.dynamic_analysis_manager = DynamicAnalysisManager()
         self.setup_dynamic_analysis_signals()
+        
+        # 添加自动切换计时器
+        self.auto_switch_timer = QTimer()
+        self.auto_switch_timer.setSingleShot(True)
+        self.auto_switch_timer.timeout.connect(self.switch_to_latest_image)
+        
+        # 记录最新图像路径
+        self.latest_image_path = None
 
         # 默认路径设置
         self.default_input_path = os.path.join(project_root, "input_data")
@@ -239,7 +247,25 @@ class MainWindow(QMainWindow):
         # 通用参数
         self.do_calibration_checkbox = QCheckBox("执行相机校准")
         self.do_calibration_checkbox.setChecked(True)
+        self.do_calibration_checkbox.stateChanged.connect(self.toggle_calibration_options)
         left_params_form_layout.addRow(self.do_calibration_checkbox)
+
+        # 添加校准模式选择
+        self.calibration_mode_layout = QHBoxLayout()
+        self.calibration_mode_label = QLabel("校准模式:")
+        self.calibration_mode_label.setIndent(20)  # 缩进，表示这是子选项
+        
+        self.manual_calibration_radio = QRadioButton("手动校准")
+        self.manual_calibration_radio.setChecked(True)  # 默认选择手动校准
+        
+        self.auto_calibration_radio = QRadioButton("自动校准")
+        
+        self.calibration_mode_layout.addWidget(self.calibration_mode_label)
+        self.calibration_mode_layout.addWidget(self.manual_calibration_radio)
+        self.calibration_mode_layout.addWidget(self.auto_calibration_radio)
+        self.calibration_mode_layout.addStretch()
+        
+        left_params_form_layout.addRow(self.calibration_mode_layout)
 
         self.save_debug_checkbox = QCheckBox("保存调试图像")
         self.save_debug_checkbox.setChecked(True)
@@ -397,6 +423,8 @@ class MainWindow(QMainWindow):
         self.image_viewer = ImageViewerWidget()
         # Connect signals BEFORE adding to layout potentially
         self.image_viewer.calibration_save_requested.connect(self.on_calibration_saved)
+        # 连接预览列表点击事件
+        self.image_viewer.preview_list.itemClicked.connect(self.on_preview_item_clicked)
 
         # --- 直接将 ImageViewer 添加到主 Splitter --- #
         self.main_splitter.addWidget(self.image_viewer) # Add the entire viewer widget
@@ -423,13 +451,9 @@ class MainWindow(QMainWindow):
         # 记录配置面板的默认宽度，用于恢复显示
         self.default_config_width = config_width
 
-        # Hide config panel if size becomes very small (optional)
-        # self.main_splitter.splitterMoved.connect(self.handle_splitter_move)
-
-        # 连接日志信号 (已移到更早的位置)
-        # self.log_signal.connect(self.append_log)
-        # 连接校准保存信号 (已移到更早的位置)
-        # self.image_viewer.calibration_save_requested.connect(self.on_calibration_saved)
+        # 初始化校准模式选项状态
+        # 确保校准模式选项初始可用
+        self.toggle_calibration_options(Qt.CheckState.Checked.value)
 
     def apply_stylesheet(self):
         """设置应用的样式表 (深色主题)"""
@@ -792,6 +816,7 @@ class MainWindow(QMainWindow):
             "calibration_path": self.calibration_path_edit.text().strip() or None,
             "model_type": model_type,
             "do_calibration": self.do_calibration_checkbox.isChecked(),
+            "calibration_mode": "manual" if self.manual_calibration_radio.isChecked() else "auto",
             "save_debug_images": self.save_debug_checkbox.isChecked(),
             "calculate_density": self.calculate_density_checkbox.isChecked(),
             "plot_layout": plot_layout, # 添加新的布局字符串
@@ -855,6 +880,7 @@ class MainWindow(QMainWindow):
         # --- Calibration Handling ---
         do_calib = config.get('do_calibration', False)
         calib_path_input = config.get('calibration_path')
+        calib_mode = config.get('calibration_mode', 'manual')
 
         # --- 确保输入路径列表的处理 --- #
         potential_paths = config['input_path']
@@ -895,50 +921,59 @@ class MainWindow(QMainWindow):
         if do_calib:
             logging.info("检查校准文件...")
             
-            # 检查每个图像的校准状态
-            for img_path in actual_image_paths_list:
-                calib_file = self.get_calibration_file_path(img_path)
-                if os.path.exists(calib_file):
-                    try:
-                        with open(calib_file, 'r') as f:
-                            points = json.load(f)
-                            if isinstance(points, list) and len(points) == 4:
-                                self.loaded_calibration_points[img_path] = points
-                                logging.info(f"已加载校准点 ({os.path.basename(img_path)}): {points}")
-                            else:
-                                logging.warning(f"校准文件 {os.path.basename(calib_file)} 格式无效")
-                                self.pending_calibrations.append(img_path)
-                    except Exception as e:
-                        logging.error(f"加载校准文件 {os.path.basename(calib_file)} 出错: {e}")
+            # 根据校准模式选择不同的处理方式
+            if calib_mode == 'manual':
+                # 手动校准模式
+                # 检查每个图像的校准状态
+                for img_path in actual_image_paths_list:
+                    calib_file = self.get_calibration_file_path(img_path)
+                    if os.path.exists(calib_file):
+                        try:
+                            with open(calib_file, 'r') as f:
+                                points = json.load(f)
+                                if isinstance(points, list) and len(points) == 4:
+                                    self.loaded_calibration_points[img_path] = points
+                                    logging.info(f"已加载校准点 ({os.path.basename(img_path)}): {points}")
+                                else:
+                                    logging.warning(f"校准文件 {os.path.basename(calib_file)} 格式无效")
+                                    self.pending_calibrations.append(img_path)
+                        except Exception as e:
+                            logging.error(f"加载校准文件 {os.path.basename(calib_file)} 出错: {e}")
+                            self.pending_calibrations.append(img_path)
+                    else:
+                        logging.info(f"图像 {os.path.basename(img_path)} 需要校准")
                         self.pending_calibrations.append(img_path)
-                else:
-                    logging.info(f"图像 {os.path.basename(img_path)} 需要校准")
-                    self.pending_calibrations.append(img_path)
 
-            if self.pending_calibrations:
-                self.start_button.setEnabled(False)
-                self.set_inputs_enabled(False)
-                
-                # 加载所有图像到查看器
-                self.image_viewer.load_images(actual_image_paths_list)
-                
-                total_pending = len(self.pending_calibrations)
-                QMessageBox.information(
-                    self, 
-                    "需要校准",
-                    f"需要为 {total_pending} 张图像进行校准。\n"
-                    f"请在右侧窗口为每张图像选择1平方米区域的4个角点。\n"
-                    f'完成后点击"保存校准"按钮。'
-                )
-                
-                # 开始第一张图片的校准
-                first_image = self.pending_calibrations[0]
-                # 设置校准保存目录为图片所在目录
-                self.image_viewer.set_calibration_save_dir(os.path.dirname(first_image))
-                self.image_viewer._set_view_mode(1, target_image_path=first_image)
-                return
+                if self.pending_calibrations:
+                    self.start_button.setEnabled(False)
+                    self.set_inputs_enabled(False)
+                    
+                    # 加载所有图像到查看器
+                    self.image_viewer.load_images(actual_image_paths_list)
+                    
+                    total_pending = len(self.pending_calibrations)
+                    QMessageBox.information(
+                        self, 
+                        "需要校准",
+                        f"需要为 {total_pending} 张图像进行校准。\n"
+                        f"请在右侧窗口为每张图像选择1平方米区域的4个角点。\n"
+                        f'完成后点击"保存校准"按钮。'
+                    )
+                    
+                    # 开始第一张图片的校准
+                    first_image = self.pending_calibrations[0]
+                    # 设置校准保存目录为图片所在目录
+                    self.image_viewer.set_calibration_save_dir(os.path.dirname(first_image))
+                    self.image_viewer._set_view_mode(1, target_image_path=first_image)
+                    return
+            else:
+                # 自动校准模式
+                logging.info("使用自动校准模式，跳过手动校准步骤")
+                # 这里可以添加自动校准的代码
+                # 目前先留空，直接进入分析流程
+                pass
 
-        # 如果不需要校准或所有校准已完成
+        # 如果不需要校准或所有校准已完成或使用自动校准
         self.image_viewer.load_images(actual_image_paths_list)
         self._proceed_with_analysis(self.last_run_config)
 
@@ -980,9 +1015,18 @@ class MainWindow(QMainWindow):
         if self.analysis_runner:
             logging.info("正在请求停止分析...")
             self.analysis_runner.stop() # 请求 AnalysisRunner 停止
+        
+        # 如果是动态分析模式，同时停止动态分析
+        if self.dynamic_analysis_checkbox.isChecked():
+            self.dynamic_analysis_checkbox.setChecked(False)
+            self.dynamic_analysis_manager.stop_monitoring()
+            self.dynamic_analysis_manager.stop_current_analysis()
+            self.dynamic_analysis_manager.clear_pending_files()
+            self.dynamic_status_label.setText("已停止")
+            self.dynamic_status_label.setStyleSheet("color: gray;")
+            
         # 不立即启用/禁用按钮，等待 analysis_complete 信号
         self.stop_button.setEnabled(False)
-        self.stop_button.setText("正在停止...")
 
     def update_progress(self, value):
         self.progress_bar.setValue(value)
@@ -1476,12 +1520,21 @@ class MainWindow(QMainWindow):
             # 更新已分析文件计数
             self.update_analyzed_files_count()
             
+            # 同步底部按钮状态
+            self.start_button.setEnabled(False)
+            self.stop_button.setEnabled(True)
+            
             self.append_log(f"已启动动态分析，监控目录: {config['input_dir']}")
         else:
             # 停止监控
             self.dynamic_analysis_manager.stop_monitoring()
             self.dynamic_status_label.setText("已停止")
             self.dynamic_status_label.setStyleSheet("color: gray;")
+            
+            # 同步底部按钮状态
+            self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
+            
             self.append_log("已停止动态分析")
             
     def update_check_interval(self, value):
@@ -1506,6 +1559,20 @@ class MainWindow(QMainWindow):
         self.dynamic_status_label.setText("分析中")
         self.dynamic_status_label.setStyleSheet("color: blue;")
         
+        # 更新最新图像路径
+        self.latest_image_path = file_path
+        
+        # 加载当前分析的图像到图像查看器
+        if os.path.exists(file_path):
+            # 将图像添加到预览列表，限制最多保留10张历史图像
+            self.image_viewer.add_image_to_preview(file_path, max_history=10)
+            
+            # 显示当前分析的图像
+            self.image_viewer.display_image(file_path)
+            
+            # 重置自动切换计时器
+            self.reset_auto_switch_timer()
+        
     def on_dynamic_analysis_file_completed(self, success, file_path, results):
         """当单个文件分析完成时的处理"""
         file_name = os.path.basename(file_path)
@@ -1514,10 +1581,34 @@ class MainWindow(QMainWindow):
             # 更新已分析文件计数
             self.update_analyzed_files_count()
             
-            # 如果有图像查看器，可以加载结果
-            if hasattr(self, 'image_viewer') and self.image_viewer:
-                # 这里可以添加加载结果到图像查看器的代码
-                pass
+            # 设置分析结果到图像查看器
+            if hasattr(self, 'image_viewer') and self.image_viewer and results:
+                # 确保结果数据格式正确
+                result_data = {}
+                
+                # 处理不同类型的结果
+                if isinstance(results, dict):
+                    # 从结果中提取关键数据
+                    result_data = results.copy()
+                    
+                    # 确保结果图像路径存在
+                    for key, value in results.items():
+                        if key.endswith('_path') and isinstance(value, str) and os.path.exists(value):
+                            result_type = key.replace('_path', '')
+                            result_data[result_type] = value
+                
+                # 设置结果数据
+                self.image_viewer.set_result_data(file_path, result_data)
+                
+                # 启用结果查看按钮
+                self.image_viewer.view_result_button.setEnabled(True)
+                
+                # 切换到结果视图模式
+                self.image_viewer.view_result_button.setChecked(True)
+                self.image_viewer._set_view_mode(2)
+                
+                # 更新数据面板
+                self.image_viewer._update_data_panel()
         else:
             self.append_log(f"文件 {file_name} 分析失败")
             
@@ -1540,11 +1631,49 @@ class MainWindow(QMainWindow):
         else:
             self.dynamic_status_label.setText("已停止")
             self.dynamic_status_label.setStyleSheet("color: gray;")
+            
+            # 恢复按钮状态
+            self.stop_button.setEnabled(False)
+            self.stop_button.setText("停止分析")
+            self.start_button.setEnabled(True)
+            
+    def on_preview_item_clicked(self, item):
+        """处理预览列表项点击事件，重置自动切换计时器"""
+        if self.dynamic_analysis_checkbox.isChecked() and hasattr(self, 'auto_switch_timer'):
+            self.reset_auto_switch_timer()
+
+    def toggle_calibration_options(self, state):
+        """切换校准选项"""
+        enabled = state == Qt.CheckState.Checked.value
+        self.calibration_mode_label.setEnabled(enabled)
+        self.manual_calibration_radio.setEnabled(enabled)
+        self.auto_calibration_radio.setEnabled(enabled)
+
+    def reset_auto_switch_timer(self):
+        """重置自动切换计时器，10秒后自动切换到最新图像"""
+        if hasattr(self, 'auto_switch_timer'):
+            self.auto_switch_timer.stop()
+            self.auto_switch_timer.start(10000)  # 10秒
+            
+    def switch_to_latest_image(self):
+        """切换到最新的图像"""
+        if self.latest_image_path and os.path.exists(self.latest_image_path):
+            self.image_viewer.display_image(self.latest_image_path)
+            # 切换到结果视图模式
+            if self.image_viewer.has_result_for_image(self.latest_image_path):
+                self.image_viewer.view_result_button.setEnabled(True)
+                self.image_viewer.view_result_button.setChecked(True)
+                self.image_viewer._set_view_mode(2)
+                # 更新数据面板
+                self.image_viewer._update_data_panel()
+            else:
+                self.image_viewer.view_original_button.setChecked(True)
+                self.image_viewer._set_view_mode(0)
 
 # # --- 用于测试 --- #
-# if __name__ == '__main__':
-#     # 需要确保在项目根目录运行，或正确设置 PYTHONPATH
-#     app = QApplication(sys.argv)
-#     main_window = MainWindow()
-#     main_window.show()
-#     sys.exit(app.exec()) 
+if __name__ == '__main__':
+    # 需要确保在项目根目录运行，或正确设置 PYTHONPATH
+    app = QApplication(sys.argv)
+    main_window = MainWindow()
+    main_window.show()
+    sys.exit(app.exec()) 

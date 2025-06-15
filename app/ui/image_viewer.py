@@ -1046,30 +1046,76 @@ class ImageViewerWidget(QWidget):
         if self.current_image_path:
             self.view_result_button.setEnabled(False)
             # 更新数据面板（清空数据）
-            self._update_data_panel()
+        self._update_data_panel()
         logging.info("[Viewer] All result maps cleared.")
+        
+    def add_image_to_preview(self, image_path: str, max_history: int = 10):
+        """
+        将图像添加到预览列表，限制保留的历史图像数量
+        
+        参数:
+            image_path: 图像路径
+            max_history: 最大保留的历史图像数量
+        """
+        # 检查图像是否已在列表中
+        for i in range(self.preview_list.count()):
+            item = self.preview_list.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) == image_path:
+                # 如果已存在，将其移到列表顶部
+                self.preview_list.takeItem(i)
+                self.preview_list.insertItem(0, item)
+                self.preview_list.setCurrentItem(item)
+                return
+                
+        # 如果不在列表中，添加新项
+        if image_path not in self.image_paths:
+            self.image_paths.append(image_path)
+            
+        # 加载缩略图
+        thumbnail = self._load_thumbnail(image_path)
+        if thumbnail:
+            item = QListWidgetItem()
+            item.setIcon(QIcon(thumbnail))
+            item.setData(Qt.ItemDataRole.UserRole, image_path)
+            self.preview_list.insertItem(0, item)
+            self.preview_list.setCurrentItem(item)
+            
+            # 如果超过最大历史数量，移除最旧的项
+            while self.preview_list.count() > max_history:
+                self.preview_list.takeItem(self.preview_list.count() - 1)
+                
+    def has_result_for_image(self, image_path: str) -> bool:
+        """
+        检查指定图像是否有分析结果
+        
+        参数:
+            image_path: 图像路径
+            
+        返回:
+            bool: 是否有结果
+        """
+        return image_path in self.result_image_map and bool(self.result_image_map[image_path])
 
     def get_calibration_points(self) -> Optional[List[List[int]]]:
-         """获取当前图像已验证(4点)并转换为整数的校准点"""
-         current_points = None
-         if self.is_calibration_mode and len(self.calibration_points) == 4:
-             current_points = self.calibration_points
-         elif not self.is_calibration_mode and self.current_image_path in self.loaded_calibration_points:
-             # Allow retrieving previously saved/loaded points even if not in calibration mode
-             loaded = self.loaded_calibration_points[self.current_image_path]
-             if isinstance(loaded, list) and len(loaded) == 4:
-                  current_points = loaded
+        """获取当前图像已验证(4点)并转换为整数的校准点"""
+        current_points = None
+        if self.is_calibration_mode and len(self.calibration_points) == 4:
+            current_points = self.calibration_points
+        elif not self.is_calibration_mode and self.current_image_path in self.loaded_calibration_points:
+            # Allow retrieving previously saved/loaded points even if not in calibration mode
+            loaded = self.loaded_calibration_points[self.current_image_path]
+            if isinstance(loaded, list) and len(loaded) == 4:
+                current_points = loaded
 
-         if current_points:
-             # Ensure points are valid format before conversion
-             try:
-                 return [[int(round(p[0])), int(round(p[1]))] for p in current_points]
-             except (TypeError, IndexError) as e:
-                  logging.error(f"[Viewer] Error converting calibration points to int: {e}, points: {current_points}")
-                  return None
-         return None
+        if current_points:
+            # Ensure points are valid format before conversion
+            try:
+                return [[int(round(p[0])), int(round(p[1]))] for p in current_points]
+            except (TypeError, IndexError) as e:
+                logging.error(f"[Viewer] Error converting calibration points to int: {e}, points: {current_points}")
+                return None
+        return None
 
-    # --- New Slot to handle button click and get ID --- #
     def _handle_button_click(self, button):
         """Receives the clicked button object and calls _set_view_mode with its ID."""
         mode_id = self.view_mode_group.id(button)
@@ -1078,9 +1124,7 @@ class ImageViewerWidget(QWidget):
             self._set_view_mode(mode_id)
         else:
              logging.warning("[Viewer _handle_button_click] Warning: Clicked button has no valid ID in the group.")
-    # --- End New Slot --- #
 
-    # --- Bug Fix 2: Add wheelEvent for zooming --- #
     def wheelEvent(self, event):
         """处理鼠标滚轮事件，实现图像缩放和自动居中"""
         # 在校准模式下不允许缩放
