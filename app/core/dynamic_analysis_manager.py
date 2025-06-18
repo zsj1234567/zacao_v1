@@ -209,6 +209,7 @@ class DynamicAnalysisManager(QObject):
         self.current_analysis_runner.progress_updated.connect(self.analysis_progress)
         self.current_analysis_runner.log_message.connect(self.analysis_log)
         self.current_analysis_runner.analysis_complete.connect(self.on_file_analysis_complete)
+        self.current_analysis_runner.analysis_file_completed.connect(self.on_file_analysis_file_completed)
         
         # 启动分析线程
         self.current_analysis_thread.start()
@@ -226,7 +227,7 @@ class DynamicAnalysisManager(QObject):
         if self.current_analysis_runner and hasattr(self.current_analysis_runner, 'config'):
             file_path = self.current_analysis_runner.config.get('input_paths', ['未知文件'])[0]
         
-        logging.info(f"文件分析完成: {file_path}, 成功: {success}, 消息: {message}")
+        logging.info(f"[DynamicAnalysis] 文件分析完成: {file_path}, 成功: {success}, 消息: {message}")
         
         # 获取分析结果
         results = {}
@@ -234,6 +235,7 @@ class DynamicAnalysisManager(QObject):
             analyzer = self.current_analysis_runner.current_analyzer
             if hasattr(analyzer, 'results'):
                 results = analyzer.results
+                logging.info(f"[DynamicAnalysis] 获取到分析器results: {results}")
                 
                 # 确保结果中包含盖度、密度和高度数据
                 if success:
@@ -243,7 +245,7 @@ class DynamicAnalysisManager(QObject):
                             coverage = analyzer.calculate_coverage()
                             results['草地盖度'] = f"{coverage:.2f}%"
                         except Exception as e:
-                            logging.error(f"计算盖度时出错: {e}")
+                            logging.error(f"[DynamicAnalysis] 计算盖度时出错: {e}")
                             results['草地盖度'] = "N/A"
                     
                     # 提取密度数据
@@ -252,7 +254,7 @@ class DynamicAnalysisManager(QObject):
                             density = analyzer.calculate_density()
                             results['草地密度'] = f"{density} 株/平方米"
                         except Exception as e:
-                            logging.error(f"计算密度时出错: {e}")
+                            logging.error(f"[DynamicAnalysis] 计算密度时出错: {e}")
                             results['草地密度'] = "N/A"
                     
                     # 提取高度数据（如果有）
@@ -264,12 +266,16 @@ class DynamicAnalysisManager(QObject):
                         height = results['草高(m)']
                         if isinstance(height, (int, float)):
                             results['草地高度'] = f"{height:.3f}m"
-                
-        # 添加到已分析文件记录
+        # 写入analyzed_files.json，无论成功与否
         if success:
+            logging.info(f"[DynamicAnalysis] 写入analyzed_files.json: {file_path}, results: {results}")
             self.files_tracker.add_analyzed_file(file_path, results)
-            
+        else:
+            logging.info(f"[DynamicAnalysis] 写入analyzed_files.json: {file_path}, results: N/A")
+            self.files_tracker.add_analyzed_file(file_path, {'草地盖度': 'N/A', '草地密度': 'N/A', '草地高度': 'N/A'})
+        
         # 发出信号
+        logging.info(f"[DynamicAnalysis] 发射analysis_file_completed信号: {file_path}, results: {results}")
         self.analysis_file_completed.emit(success, file_path, results)
         
         # 清理资源
@@ -278,14 +284,16 @@ class DynamicAnalysisManager(QObject):
             self.current_analysis_thread.wait()
             self.current_analysis_thread = None
             self.current_analysis_runner = None
-            
+        
         # 重置分析状态
         self.is_analyzing = False
         
         # 处理下一个文件（如果有）
         if self.pending_files:
+            logging.info(f"[DynamicAnalysis] 继续处理下一个文件，剩余: {len(self.pending_files)}")
             self.process_next_file()
         else:
+            logging.info(f"[DynamicAnalysis] 所有文件分析完成，发射analysis_all_completed信号")
             self.analysis_all_completed.emit()
             
     def stop_current_analysis(self):
@@ -321,3 +329,19 @@ class DynamicAnalysisManager(QObject):
         
         img_basename = os.path.splitext(os.path.basename(image_path))[0]
         return os.path.join(calib_dir, f"{img_basename}.json")
+
+    def on_file_analysis_file_completed(self, success, file_path, results):
+        """
+        直接用AnalysisRunner的analysis_file_completed信号参数处理分析结果，避免依赖current_analyzer生命周期
+        """
+        logging.info(f"[DynamicAnalysis] [analysis_file_completed] 文件: {file_path}, 成功: {success}, results: {results}")
+        # 写入analyzed_files.json，无论成功与否
+        if success:
+            logging.info(f"[DynamicAnalysis] [analysis_file_completed] 写入analyzed_files.json: {file_path}, results: {results}")
+            self.files_tracker.add_analyzed_file(file_path, results)
+        else:
+            logging.info(f"[DynamicAnalysis] [analysis_file_completed] 写入analyzed_files.json: {file_path}, results: N/A")
+            self.files_tracker.add_analyzed_file(file_path, {'草地盖度': 'N/A', '草地密度': 'N/A', '草地高度': 'N/A'})
+        # 发射UI信号
+        logging.info(f"[DynamicAnalysis] [analysis_file_completed] 发射analysis_file_completed信号: {file_path}, results: {results}")
+        self.analysis_file_completed.emit(success, file_path, results)

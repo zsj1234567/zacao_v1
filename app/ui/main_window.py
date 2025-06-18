@@ -1626,19 +1626,15 @@ class MainWindow(QMainWindow):
                     logging.error(f"无法解析动态分析结果JSON: {results}")
                     return
 
-            # 更新已分析文件计数
-            self.analyzed_files_count += 1
+            # 更新已分析文件计数（移除自增，直接用update_analyzed_files_count）
             self.update_analyzed_files_count()
 
             # 构建结果数据字典
             result_data = {}
-            analysis_data = {}  # 用于存储分析数据（盖度、密度、高度等）
-
             # 处理结果数据
             for key, value in results.items():
                 if key in ['original_path', '文件名', '分析模型', '状态', '错误信息', '详细错误']:
                     continue
-                    
                 if isinstance(value, str) and os.path.exists(value):
                     if key.endswith('_path'):
                         result_type = key.replace('_path', '')
@@ -1646,23 +1642,12 @@ class MainWindow(QMainWindow):
                     elif key.endswith('_image'):
                         result_data[key] = value
                     elif os.path.isfile(value) and value.endswith(('.png', '.jpg', '.jpeg')):
-                        # 可能是图像文件路径
                         result_data[key + '_image'] = value
                 else:
-                    # 保留非路径数据
                     result_data[key] = value
-                    # 同时保存到分析数据中
-                    if key in ['草地盖度', '草地密度', '草地高度']:
-                        analysis_data[key] = value
 
-            # 设置结果数据到图像查看器
+            # 设置结果数据到图像查看器（分析数据和图像路径都交由set_result_data处理）
             self.image_viewer.set_result_data(file_path, result_data)
-            
-            # 确保分析数据被正确设置
-            if analysis_data:
-                self.image_viewer.analysis_data[file_path] = analysis_data
-                # 更新数据面板
-                self.image_viewer._update_data_panel()
 
             # 如果当前没有显示任何图像，则显示这个新分析的结果
             if not self.image_viewer.current_image_path:
@@ -1672,6 +1657,9 @@ class MainWindow(QMainWindow):
                 # 如果当前正在显示这个图像，更新其显示
                 if self.image_viewer.current_image_path == file_path:
                     self.image_viewer.display_image(file_path)
+                    # 自动切换到结果视图
+                    self.image_viewer.view_result_button.setChecked(True)
+                    self.image_viewer._set_view_mode(2)
 
             # 启用结果查看按钮
             self.image_viewer.view_result_button.setEnabled(True)
@@ -1709,9 +1697,14 @@ class MainWindow(QMainWindow):
                 self.image_viewer.view_result_button.setEnabled(True)
 
     def on_preview_item_clicked(self, item):
-        """处理预览列表项点击事件，重置自动切换计时器"""
+        """处理预览列表项点击事件，重置自动切换计时器，并刷新数据面板和结果视图"""
         if self.dynamic_analysis_checkbox.isChecked() and hasattr(self, 'auto_switch_timer'):
             self.reset_auto_switch_timer()
+        # 新增：切换显示对应图片
+        if item:
+            image_path = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(image_path, str):
+                self.image_viewer.display_image(image_path)
 
     def toggle_calibration_options(self, state):
         """切换校准选项"""

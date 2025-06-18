@@ -37,12 +37,21 @@ class AnalysisRunner(QObject):
     def run(self):
         """运行分析的核心逻辑"""
         if not GrassAnalyzer or not DeepLearningGrassAnalyzer or not analyze_point_cloud:
-            self.log_message.emit("错误：未能加载必要的分析模块。请检查脚本路径和依赖。")
-            self.analysis_complete.emit(False, "分析模块加载失败")
+            try:
+                self.log_message.emit("错误：未能加载必要的分析模块。请检查脚本路径和依赖。")
+            except RuntimeError:
+                return
+            try:
+                self.analysis_complete.emit(False, "分析模块加载失败")
+            except RuntimeError:
+                return
             return
 
         self._is_running = True
-        self.log_message.emit("开始分析...")
+        try:
+            self.log_message.emit("开始分析...")
+        except RuntimeError:
+            return
         self.progress_updated.emit(0)
         total_steps = 100 # Total progress steps
 
@@ -62,7 +71,10 @@ class AnalysisRunner(QObject):
             hsv_config_path = self.config.get('hsv_config_path', None)
 
             os.makedirs(output_dir, exist_ok=True)
-            self.log_message.emit(f"结果将保存到: {os.path.abspath(output_dir)}")
+            try:
+                self.log_message.emit(f"结果将保存到: {os.path.abspath(output_dir)}")
+            except RuntimeError:
+                return
 
             num_images = len(input_paths)
             all_results = [] # Store results for each image
@@ -75,16 +87,25 @@ class AnalysisRunner(QObject):
 
             for i, img_path in enumerate(input_paths):
                 if not self._is_running:
-                    self.log_message.emit("分析被用户中止。")
-                    self.analysis_complete.emit(False, "用户中止")
+                    try:
+                        self.log_message.emit("分析被用户中止。")
+                    except RuntimeError:
+                        return
+                    try:
+                        self.analysis_complete.emit(False, "用户中止")
+                    except RuntimeError:
+                        return
                     return
 
-                self.log_message.emit(f"--- 开始处理图像: {os.path.basename(img_path)} ({i + 1}/{num_images}) ---")
+                try:
+                    self.log_message.emit(f"--- 开始处理图像: {os.path.basename(img_path)} ({i + 1}/{num_images}) ---")
+                except RuntimeError:
+                    return
                 current_image_results = {"文件名": os.path.basename(img_path), "分析模型": model_type}
                 image_start_progress = int(i / num_images * image_processing_progress)
                 image_end_progress = int((i + 1) / num_images * image_processing_progress)
                 # Simplified progress updates
-                update_img_progress = lambda percent: self.progress_updated.emit(image_start_progress + int(percent * (image_end_progress - image_start_progress)))
+                update_img_progress = lambda percent: self._safe_emit_progress(image_start_progress + int(percent * (image_end_progress - image_start_progress)))
 
                 try:
                     # --- 1. Initialize Analyzer ---
@@ -235,6 +256,14 @@ class AnalysisRunner(QObject):
                         current_image_results["density_percentage"] = round(density_percentage, 2)
 
                     # --- 更新 image_summary 创建逻辑 --- #
+                    # 合并current_image_results和self.current_analyzer.results，确保所有分析数据和图像路径都能传递
+                    results = {}
+                    if hasattr(self.current_analyzer, 'results') and isinstance(self.current_analyzer.results, dict):
+                        results.update(self.current_analyzer.results)
+                    results.update(current_image_results)
+                    # 发射analysis_file_completed信号，传递完整results
+                    self.analysis_file_completed.emit(True, img_path, results)
+
                     image_summary = current_image_results.copy()
                     image_summary['original_path'] = img_path
                     image_summary["状态"] = "成功"
@@ -412,6 +441,12 @@ class AnalysisRunner(QObject):
             self.current_analysis_thread.wait()
             self.current_analysis_thread = None
             self.current_analysis_runner = None
+
+    def _safe_emit_progress(self, value):
+        try:
+            self.progress_updated.emit(value)
+        except RuntimeError:
+            return
 
 # Add a simple check function if needed
 if __name__ == '__main__':

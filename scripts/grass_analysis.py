@@ -53,6 +53,7 @@ class GrassAnalyzer:
         self.calibration_dir = 'calibrations'  # 校准文件目录
         self.crop_region = None  # 剪裁区域坐标 (x_min, y_min, x_max, y_max)
         self.calibration_area_pixels = None  # 校准区域的实际面积（像素数）
+        self.results = {}  # 用于存储分析结果，供UI使用
 
     def load_image(self, image_path):
         """加载图像并尝试加载对应的校准文件 (支持非ASCII路径)"""
@@ -102,7 +103,7 @@ class GrassAnalyzer:
             # 移除图像文件扩展名，使用基本文件名
             image_basename = os.path.splitext(image_name)[0]
             calibration_file_no_ext = os.path.join(
-                self.calibration_dir, rel_path, f"{image_basename}.json")
+                self.calibration_dir, rel_path, f"calibrations\{image_basename}.json")
 
             if os.path.exists(calibration_file_no_ext):
                 with open(calibration_file_no_ext, 'r') as f:
@@ -432,6 +433,9 @@ class GrassAnalyzer:
 
         # 计算盖度
         coverage = grass_pixels / total_pixels * 100
+        
+        # 存储结果
+        self.results['草地盖度'] = f"{coverage:.2f}%"
 
         return coverage
 
@@ -588,8 +592,10 @@ class GrassAnalyzer:
                 print("尝试重新运行校准...")
                 self.calibrate_image()
                 if self.calibration_area_pixels is None or self.calibration_area_pixels <= 0:
+                    self.results['草地密度'] = "无法计算"
                     return 0 # 或者 raise ValueError("无法获取有效的校准区域面积")
             else:
+                self.results['草地密度'] = "无法计算"
                 return 0 # 或者 raise ValueError("无法获取有效的校准区域面积")
 
         # 获取校准区域的实际面积（像素数）
@@ -610,6 +616,8 @@ class GrassAnalyzer:
             num_instances = len([i for i in unique_instances if i > 0])
 
             if method == 'instance_count':
+                # 存储结果
+                self.results['草地密度'] = f"{num_instances} 株/平方米"
                 return num_instances
 
         if method == 'area_based' or method == 'combined':
@@ -617,13 +625,20 @@ class GrassAnalyzer:
             avg_plant_size = 200
             area_based_count = max(1, int(grass_area / avg_plant_size))
             if method == 'area_based':
+                # 存储结果
+                self.results['草地密度'] = f"{area_based_count} 株/平方米"
                 return area_based_count
 
         if method == 'combined':
             if num_instances < 0.5 * area_based_count:
                 logging.warning("[GrassAnalyzer] 实例分割可能不充分，使用组合方法估计密度")
-                return max(num_instances, int(0.5 * (num_instances + area_based_count)))
+                combined_count = max(num_instances, int(0.5 * (num_instances + area_based_count)))
+                # 存储结果
+                self.results['草地密度'] = f"{combined_count} 株/平方米"
+                return combined_count
             else:
+                # 存储结果
+                self.results['草地密度'] = f"{num_instances} 株/平方米"
                 return num_instances
 
         raise ValueError(f"不支持的密度计算方法: {method}")
@@ -899,6 +914,18 @@ class GrassAnalyzer:
                         print(f"[Visualize] 使用 imencode/open 保存调试图像 [{key}] 到 '{normalized_debug_save_path}' 时发生异常: {e}")
                     # --- 结束修改 --- #
 
+        # 将分析结果和所有图像路径存储到results属性中
+        self.results.update({
+            'analysis_image': saved_paths.get('analysis_image', ''),
+            'original_debug_image': saved_paths.get('original_debug_image', ''),
+            'calibrated_debug_image': saved_paths.get('calibrated_debug_image', ''),
+            'hsv_mask_debug_image': saved_paths.get('hsv_mask_debug_image', ''),
+            'coverage_overlay_debug_image': saved_paths.get('coverage_overlay_debug_image', ''),
+            'instance_mask_debug_image': saved_paths.get('instance_mask_debug_image', ''),
+            'instance_overlay_debug_image': saved_paths.get('instance_overlay_debug_image', ''),
+            'density_overlay_debug_image': saved_paths.get('density_overlay_debug_image', '')
+        })
+        
         # 返回包含所有已保存路径的字典
         return saved_paths
 

@@ -44,14 +44,21 @@ class AnalyzedFilesTracker:
                 logging.error(f"创建分析记录文件失败: {e}")
     
     def _load_records(self):
-        """从文件加载已分析记录"""
+        """从文件加载已分析记录，若文件为空或内容非法则自动重置为 {}"""
         try:
+            # 检查文件是否为空
+            if os.path.getsize(self.record_file_path) == 0:
+                self.analyzed_files = {}
+                self._save_records()
+                logging.warning(f"分析记录文件为空，已重置为 {{}}: {self.record_file_path}")
+                return
             with open(self.record_file_path, 'r', encoding='utf-8') as f:
                 self.analyzed_files = json.load(f)
             logging.info(f"已加载分析记录，共 {len(self.analyzed_files)} 条")
         except Exception as e:
-            logging.error(f"加载分析记录失败: {e}")
+            logging.error(f"加载分析记录失败: {e}，已重置为 {{}}")
             self.analyzed_files = {}
+            self._save_records()
     
     def _save_records(self):
         """保存记录到文件"""

@@ -277,7 +277,7 @@ class ImageViewerWidget(QWidget):
              print("[Viewer] No valid images loaded, view cleared.")
 
     def display_image(self, image_path: str):
-        """显示指定路径的图像"""
+        """显示指定路径的图像，并自动从analyzed_files.json读取结果"""
         if not image_path or not os.path.exists(image_path):
             logging.error(f"[Viewer] 尝试显示不存在的图像: {image_path}")
             self._show_placeholder_scene("图像不存在或路径无效")
@@ -298,12 +298,23 @@ class ImageViewerWidget(QWidget):
             self._enter_calibration_logic(image_path)
         else:
             # 如果当前不是校准模式，确保校准模式已退出
-            # 直接设置状态，而不是调用exit_calibration_mode()以避免递归
             self.is_calibration_mode = False
             self.calibration_controls_widget.setVisible(False)
             self.graphics_view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
             self.graphics_view.viewport().setCursor(Qt.CursorShape.ArrowCursor)
-            
+        
+        # 新增：自动从analyzed_files.json读取结果
+        try:
+            from app.core.analyzed_files_tracker import AnalyzedFilesTracker
+            tracker = AnalyzedFilesTracker()
+            file_name = os.path.basename(image_path)
+            analyzed = tracker.analyzed_files.get(file_name, {})
+            results = analyzed.get('results', None)
+            if results:
+                self.set_result_data(image_path, results)
+        except Exception as e:
+            logging.error(f"[Viewer] 读取analyzed_files.json失败: {e}")
+
         # 更新数据面板显示
         self._update_data_panel()
 
