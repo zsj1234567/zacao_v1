@@ -1225,6 +1225,72 @@ class MainWindow(QMainWindow):
             logging.error(traceback.format_exc())
             return False
 
+    def write_analysis_results_to_db(self, results_list):
+        """
+        将分析结果写入数据库表 nk_analysis_results。
+        参数:
+            results_list: 分析结果列表，每项为单张图片的分析字典。
+        """
+        if not (hasattr(self, 'db_manager') and self.db_manager):
+            self.append_log("[DB写入] 未检测到数据库连接，跳过写入数据库。")
+            return
+        db = self.db_manager
+        import os, datetime, logging
+        create_sql = '''
+        CREATE TABLE IF NOT EXISTS nk_analysis_results (
+            id SERIAL PRIMARY KEY,
+            jpeg_lid BIGINT,
+            ld_lid BIGINT,
+            coverage VARCHAR(32),
+            height VARCHAR(32),
+            density VARCHAR(32),
+            analysis_time TIMESTAMP,
+            UNIQUE (jpeg_lid, ld_lid)
+        )'''
+        try:
+            db.execute_update(create_sql)
+        except Exception as e:
+            self.append_log(f"[DB写入] 创建表失败: {e}")
+            return
+        # 动态推断output_dir，确保lid映射与实际图片路径一致
+        if results_list and 'original_path' in results_list[0]:
+            first_img_path = results_list[0]['original_path']
+            output_dir = os.path.dirname(first_img_path)
+        else:
+            output_dir = "output_images"  # 兜底
+        image_to_jpeg_lid = db.get_image_to_jpeg_lid_map(output_dir=output_dir)
+        image_to_ld_lid = db.get_image_to_ld_lid_map(output_dir=output_dir)
+        for image_result in results_list:
+            original_path = image_result.get('original_path')
+            if not original_path:
+                continue
+            norm_path = os.path.abspath(original_path)
+            jpeg_lid = image_to_jpeg_lid.get(norm_path) or image_to_jpeg_lid.get(original_path)
+            ld_lid = image_to_ld_lid.get(norm_path) or image_to_ld_lid.get(original_path)
+            if jpeg_lid is None or ld_lid is None:
+                logging.warning(f"[DB写入] 跳过: lid映射失败 original_path={original_path} norm_path={norm_path}")
+                continue
+            coverage = str(image_result.get('草地盖度', image_result.get('盖度', '')))
+            height = str(image_result.get('草地高度', image_result.get('高度', '')))
+            density = str(image_result.get('草地密度', image_result.get('密度', '')))
+            now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            update_sql = '''
+            UPDATE nk_analysis_results SET coverage=%s, height=%s, density=%s, analysis_time=%s
+            WHERE jpeg_lid=%s AND ld_lid=%s
+            '''
+            try:
+                updated = db.execute_update(update_sql, (coverage, height, density, now, jpeg_lid, ld_lid))
+                if updated == 0:
+                    insert_sql = '''
+                    INSERT INTO nk_analysis_results (jpeg_lid, ld_lid, coverage, height, density, analysis_time)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    '''
+                    db.execute_update(insert_sql, (jpeg_lid, ld_lid, coverage, height, density, now))
+                logging.info(f"[DB写入] 写入: jpeg_lid={jpeg_lid}, ld_lid={ld_lid}, coverage={coverage}, height={height}, density={density}")
+            except Exception as e:
+                self.append_log(f"[DB写入] 写入失败: {e}")
+        self.append_log("分析结果已写入数据库表 nk_analysis_results")
+
     def on_analysis_complete(self, success, message):
         # logging.info(f"分析完成: success={success}, message='{message}'") # 移除原始详细日志
         completion_status = "成功完成" if success else "失败"
@@ -1238,60 +1304,15 @@ class MainWindow(QMainWindow):
         self.analysis_runner = None
         self.set_inputs_enabled(True)
 
-        # --- 优先写入数据库分析结果（在清空分析数据前） ---
-        if self.is_database_mode() and hasattr(self, 'db_manager') and hasattr(self, 'db_loaded_image_paths'):
+        # --- 新数据库写入逻辑 ---
+        results_list = []
+        if self.is_database_mode() and hasattr(self, 'db_manager'):
             try:
-                import os
-                db = self.db_manager
-                create_sql = '''
-                CREATE TABLE IF NOT EXISTS nk_analysis_results (
-                    id SERIAL PRIMARY KEY,
-                    jpeg_lid INTEGER,
-                    ld_lid INTEGER,
-                    coverage VARCHAR(32),
-                    height VARCHAR(32),
-                    density VARCHAR(32),
-                    analysis_time TIMESTAMP,
-                    UNIQUE (jpeg_lid, ld_lid)
-                )'''
-                db.execute_update(create_sql)
-                if 'results_list' not in locals():
-                    results_list = []
-                    try:
-                        results_list = json.loads(message)
-                    except Exception:
-                        pass
-                for image_result in results_list:
-                    original_path = image_result.get('original_path')
-                    if not original_path:
-                        continue
-                    # 路径归一化，确保与image_to_jpeg_lid等一致
-                    norm_path = os.path.abspath(original_path)
-                    # 兼容windows和linux分隔符
-                    jpeg_lid = self.image_to_jpeg_lid.get(norm_path) or self.image_to_jpeg_lid.get(original_path)
-                    ld_lid = self.image_to_ld_lid.get(norm_path) or self.image_to_ld_lid.get(original_path)
-                    if jpeg_lid is None or ld_lid is None:
-                        logging.warning(f"[DB写入] 跳过: lid映射失败 original_path={original_path} norm_path={norm_path}")
-                        continue
-                    coverage = str(image_result.get('草地盖度', image_result.get('盖度', '')))
-                    height = str(image_result.get('草地高度', image_result.get('高度', '')))
-                    density = str(image_result.get('草地密度', image_result.get('密度', '')))
-                    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    update_sql = '''
-                    UPDATE nk_analysis_results SET coverage=%s, height=%s, density=%s, analysis_time=%s
-                    WHERE jpeg_lid=%s AND ld_lid=%s
-                    '''
-                    updated = db.execute_update(update_sql, (coverage, height, density, now, jpeg_lid, ld_lid))
-                    if updated == 0:
-                        insert_sql = '''
-                        INSERT INTO nk_analysis_results (jpeg_lid, ld_lid, coverage, height, density, analysis_time)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        '''
-                        db.execute_update(insert_sql, (jpeg_lid, ld_lid, coverage, height, density, now))
-                    logging.info(f"[DB写入] 写入: jpeg_lid={jpeg_lid}, ld_lid={ld_lid}, coverage={coverage}, height={height}, density={density}")
-                self.append_log("分析结果已写入数据库表 nk_analysis_results")
-            except Exception as e:
-                self.append_log(f"写入数据库分析结果表失败: {e}")
+                results_list = json.loads(message)
+            except Exception:
+                results_list = []
+            if isinstance(results_list, list) and results_list:
+                self.write_analysis_results_to_db(results_list)
 
         # After analysis, regardless of success/fail, re-enable inputs
         self.set_inputs_enabled(True) # Make sure inputs are re-enabled

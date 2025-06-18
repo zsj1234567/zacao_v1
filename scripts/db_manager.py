@@ -310,7 +310,33 @@ class PostgresManager:
             logging.error(f"解析激光数据失败: {str(e)}")
             raise
 
+    def get_image_to_jpeg_lid_map(self, output_dir="output_images"):
+        """
+        返回图片路径到JPEG lid的映射 {img_path: jpeg_lid}
+        """
+        jpeg_records = self.get_jpeg_data()
+        image_to_jpeg_lid = {}
+        for rec in jpeg_records:
+            lid = rec['lid']
+            img_path = self.save_jpeg_to_file(lid, output_dir=output_dir)
+            image_to_jpeg_lid[img_path] = lid
+        return image_to_jpeg_lid
 
+    def get_image_to_ld_lid_map(self, output_dir="output_images"):
+        """
+        返回图片路径到LD lid的映射 {img_path: ld_lid}
+        """
+        jpeg_records = self.get_jpeg_data()
+        ld_records = self.get_ld_data()
+        image_to_ld_lid = {}
+        for idx, rec in enumerate(jpeg_records):
+            lid = rec['lid']
+            img_path = self.save_jpeg_to_file(lid, output_dir=output_dir)
+            if idx < len(ld_records):
+                image_to_ld_lid[img_path] = ld_records[idx]['lid']
+            else:
+                image_to_ld_lid[img_path] = None
+        return image_to_ld_lid
 
 class DataProcessor:
     """数据处理器：处理和整理从数据库获取的数据"""
