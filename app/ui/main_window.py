@@ -5,13 +5,14 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QMainWindow, QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QFileDialog, QProgressBar, QTextEdit, QComboBox,
-    QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox, QMessageBox, QSizePolicy, QStyleFactory, QSplitter, QRadioButton, QScrollArea
+    QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox, QMessageBox, QSizePolicy, QStyleFactory, QSplitter, QRadioButton, QScrollArea, QToolButton
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QPalette, QColor, QFont
 import json # For calibration saving/loading
 import numpy as np
 import traceback
+import datetime
 
 # 导入新的可视化窗口部件
 try:
@@ -40,7 +41,7 @@ from app.core.dynamic_analysis_manager import DynamicAnalysisManager
 class MainWindow(QMainWindow):
     log_signal = pyqtSignal(str)
 
-    def __init__(self):
+    def __init__(self, log_file_path=None):
         super().__init__()
         self.setWindowTitle("杂草覆盖与密度分析工具")
         self.setGeometry(100, 100, 900, 750) # 调整窗口大小
@@ -77,7 +78,7 @@ class MainWindow(QMainWindow):
         self.apply_stylesheet()
 
         # 初始化日志系统
-        setup_logging(self.log_signal)
+        setup_logging(self.log_signal, log_file_path=log_file_path)
 
         # --- 主布局 ---
         self.main_widget = QWidget()
@@ -442,13 +443,12 @@ class MainWindow(QMainWindow):
 
         # --- 右侧: 可视化窗口 ---
         self.image_viewer = ImageViewerWidget()
-        # Connect signals BEFORE adding to layout potentially
         self.image_viewer.calibration_save_requested.connect(self.on_calibration_saved)
-        # 连接预览列表点击事件
         self.image_viewer.preview_list.itemClicked.connect(self.on_preview_item_clicked)
-
+        # --- 日志面板相关代码已移除 ---
+        # 保留日志信号连接和日志文件写入功能
         # --- 直接将 ImageViewer 添加到主 Splitter --- #
-        self.main_splitter.addWidget(self.image_viewer) # Add the entire viewer widget
+        self.main_splitter.addWidget(self.image_viewer)
 
         # --- Set Initial Splitter Sizes --- #
         # Adjust main splitter sizes
@@ -1229,19 +1229,69 @@ class MainWindow(QMainWindow):
         # logging.info(f"分析完成: success={success}, message='{message}'") # 移除原始详细日志
         completion_status = "成功完成" if success else "失败"
         self.progress_bar.setValue(100 if success else self.progress_bar.value())
-        # --- 修改：只记录状态，不记录完整 message（JSON） ---
         self.append_log(f"\n--- 分析{completion_status} --- ")
-        # --- 结束修改 ---
-
-        # 恢复按钮状态和输入
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.stop_button.setText("停止分析")
         self.set_inputs_enabled(True)
-
-        # 清理引用
         self.analysis_thread = None
         self.analysis_runner = None
+        self.set_inputs_enabled(True)
+
+        # --- 优先写入数据库分析结果（在清空分析数据前） ---
+        if self.is_database_mode() and hasattr(self, 'db_manager') and hasattr(self, 'db_loaded_image_paths'):
+            try:
+                import os
+                db = self.db_manager
+                create_sql = '''
+                CREATE TABLE IF NOT EXISTS nk_analysis_results (
+                    id SERIAL PRIMARY KEY,
+                    jpeg_lid INTEGER,
+                    ld_lid INTEGER,
+                    coverage VARCHAR(32),
+                    height VARCHAR(32),
+                    density VARCHAR(32),
+                    analysis_time TIMESTAMP,
+                    UNIQUE (jpeg_lid, ld_lid)
+                )'''
+                db.execute_update(create_sql)
+                if 'results_list' not in locals():
+                    results_list = []
+                    try:
+                        results_list = json.loads(message)
+                    except Exception:
+                        pass
+                for image_result in results_list:
+                    original_path = image_result.get('original_path')
+                    if not original_path:
+                        continue
+                    # 路径归一化，确保与image_to_jpeg_lid等一致
+                    norm_path = os.path.abspath(original_path)
+                    # 兼容windows和linux分隔符
+                    jpeg_lid = self.image_to_jpeg_lid.get(norm_path) or self.image_to_jpeg_lid.get(original_path)
+                    ld_lid = self.image_to_ld_lid.get(norm_path) or self.image_to_ld_lid.get(original_path)
+                    if jpeg_lid is None or ld_lid is None:
+                        logging.warning(f"[DB写入] 跳过: lid映射失败 original_path={original_path} norm_path={norm_path}")
+                        continue
+                    coverage = str(image_result.get('草地盖度', image_result.get('盖度', '')))
+                    height = str(image_result.get('草地高度', image_result.get('高度', '')))
+                    density = str(image_result.get('草地密度', image_result.get('密度', '')))
+                    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    update_sql = '''
+                    UPDATE nk_analysis_results SET coverage=%s, height=%s, density=%s, analysis_time=%s
+                    WHERE jpeg_lid=%s AND ld_lid=%s
+                    '''
+                    updated = db.execute_update(update_sql, (coverage, height, density, now, jpeg_lid, ld_lid))
+                    if updated == 0:
+                        insert_sql = '''
+                        INSERT INTO nk_analysis_results (jpeg_lid, ld_lid, coverage, height, density, analysis_time)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        '''
+                        db.execute_update(insert_sql, (jpeg_lid, ld_lid, coverage, height, density, now))
+                    logging.info(f"[DB写入] 写入: jpeg_lid={jpeg_lid}, ld_lid={ld_lid}, coverage={coverage}, height={height}, density={density}")
+                self.append_log("分析结果已写入数据库表 nk_analysis_results")
+            except Exception as e:
+                self.append_log(f"写入数据库分析结果表失败: {e}")
 
         # After analysis, regardless of success/fail, re-enable inputs
         self.set_inputs_enabled(True) # Make sure inputs are re-enabled
@@ -1854,20 +1904,30 @@ class MainWindow(QMainWindow):
             return
         try:
             jpeg_records = self.db_manager.get_jpeg_data()
+            self.db_loaded_jpeg_records = jpeg_records  # 保存完整jpeg记录
             if not jpeg_records:
                 QMessageBox.warning(self, "无数据", "未查询到图片数据")
                 return
+            ld_records = self.db_manager.get_ld_data()
+            self.db_loaded_ld_records = ld_records  # 保存完整ld记录
             temp_dir = os.path.join(self.default_input_path, "db_temp_images")
             os.makedirs(temp_dir, exist_ok=True)
             image_paths = []
             self.lid_to_image = {}
             self.image_to_lid = {}
-            for rec in jpeg_records:
+            self.image_to_jpeg_lid = {}
+            self.image_to_ld_lid = {}
+            for idx, rec in enumerate(jpeg_records):
                 lid = rec['lid']
                 img_path = self.db_manager.save_jpeg_to_file(lid, output_dir=temp_dir)
                 image_paths.append(img_path)
                 self.lid_to_image[lid] = img_path
                 self.image_to_lid[img_path] = lid
+                self.image_to_jpeg_lid[img_path] = lid
+                if idx < len(ld_records):
+                    self.image_to_ld_lid[img_path] = ld_records[idx]['lid']
+                else:
+                    self.image_to_ld_lid[img_path] = None
             self.image_viewer.load_images(image_paths)
             self.db_loaded_image_paths = image_paths
             QMessageBox.information(self, "加载成功", f"共加载{len(image_paths)}张图片")

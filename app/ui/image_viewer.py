@@ -110,16 +110,14 @@ class ImageViewerWidget(QWidget):
         self.view_original_button.setChecked(True)
         self.view_calibration_button = QPushButton("校准视图")
         self.view_calibration_button.setCheckable(True)
-        self.view_calibration_button.setEnabled(False) # Initially disabled
-        self.view_result_button = QPushButton("结果图像") # 这个按钮现在触发结果类型选择
+        self.view_calibration_button.setEnabled(False)
+        self.view_result_button = QPushButton("结果图像")
         self.view_result_button.setCheckable(True)
-        self.view_result_button.setEnabled(False) # Initially disabled
-
+        self.view_result_button.setEnabled(False)
         self.view_mode_group.addButton(self.view_original_button, 0)
         self.view_mode_group.addButton(self.view_calibration_button, 1)
-        self.view_mode_group.addButton(self.view_result_button, 2) # Add result button with ID 2
+        self.view_mode_group.addButton(self.view_result_button, 2)
         self.view_mode_group.buttonClicked.connect(self._handle_button_click)
-
         view_mode_layout.addWidget(self.view_original_button)
         view_mode_layout.addWidget(self.view_calibration_button)
         view_mode_layout.addWidget(self.view_result_button)

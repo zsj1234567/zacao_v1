@@ -1,5 +1,6 @@
 import logging
 from PyQt6.QtCore import QObject, pyqtSignal
+import os
 
 class QtLogHandler(logging.Handler):
     """将日志记录发送到 PyQt 信号的处理器"""
@@ -17,8 +18,8 @@ class QtLogHandler(logging.Handler):
         except Exception:
             self.handleError(record)
 
-def setup_logging(log_signal: pyqtSignal, level=logging.INFO):
-    """配置 Python 的 logging 系统以使用 QtLogHandler"""
+def setup_logging(log_signal: pyqtSignal, level=logging.INFO, log_file_path=None):
+    """配置 Python 的 logging 系统以使用 QtLogHandler 和可选的文件日志"""
     # 获取根记录器
     logger = logging.getLogger()
     logger.setLevel(level)
@@ -30,6 +31,12 @@ def setup_logging(log_signal: pyqtSignal, level=logging.INFO):
     # 创建并添加 Qt 处理器
     qt_handler = QtLogHandler(log_signal)
     logger.addHandler(qt_handler)
+
+    if log_file_path:
+        file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+        file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+        file_handler.setFormatter(file_formatter)
+        logger.addHandler(file_handler)
 
     # (可选) 如果希望控制台也输出日志，可以添加一个 StreamHandler
     # stream_handler = logging.StreamHandler()
@@ -47,7 +54,7 @@ def setup_logging(log_signal: pyqtSignal, level=logging.INFO):
     # builtins.print = gui_print
 
     # 测试日志
-    logging.info("日志系统已初始化，将输出到 GUI。")
+    logging.info("日志系统已初始化，将输出到 GUI 和日志文件。")
 
 # --- 如果需要恢复 print ---
 # def restore_print():
