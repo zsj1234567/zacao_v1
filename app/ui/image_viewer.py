@@ -1030,10 +1030,11 @@ class ImageViewerWidget(QWidget):
                         analysis_data['盖度'] = value
                 # 处理高度数据
                 elif key == '草地高度':
-                    if isinstance(value, str) and 'm' in value:
+                    # 只处理形如 'xx.xmm' 的字符串，直接提取数值，单位为mm
+                    if isinstance(value, str) and value.endswith('mm'):
                         try:
-                            height_m = float(value.replace('m', ''))
-                            analysis_data['高度'] = height_m * 100  # 转换为厘米
+                            height_mm = float(value.replace('mm', ''))
+                            analysis_data['高度'] = height_mm
                         except ValueError:
                             analysis_data['高度'] = value
                     else:
@@ -1257,7 +1258,7 @@ class ImageViewerWidget(QWidget):
             
         height = data.get('高度', 'N/A')
         if height != 'N/A':
-            height_str = f"{height:.1f}cm" if isinstance(height, (int, float)) else str(height)
+            height_str = f"{height:.2f}mm" if isinstance(height, (int, float)) else str(height)
             self.height_label.setText(f"高度: {height_str}")
         else:
             self.height_label.setText("高度: N/A")

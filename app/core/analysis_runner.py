@@ -214,9 +214,10 @@ class AnalysisRunner(QObject):
                                 if os.path.exists(stats_file):
                                     with open(stats_file, 'r', encoding='utf-8') as f:
                                         stats = json.load(f)
-                                    z_height = stats.get('filtered_data', {}).get('z_height', None)
+                                    filtered = stats.get('filtered_data', {})
+                                    z_height = filtered.get('z_height', None)
                                     if z_height is not None:
-                                        current_image_results["草地高度"] = f"{z_height:.2f}mm"
+                                        current_image_results["草地高度"] = f"{float(z_height):.2f}mm"
                                     else:
                                         current_image_results["草地高度"] = "雷达高度缺失"
                                 else:

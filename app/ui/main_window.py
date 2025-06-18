@@ -119,7 +119,7 @@ class MainWindow(QMainWindow):
         self.db_host_edit = QLineEdit("localhost")
         self.db_port_edit = QLineEdit("5432")
         self.db_user_edit = QLineEdit("postgres")
-        self.db_pass_edit = QLineEdit()
+        self.db_pass_edit = QLineEdit("284490")
         self.db_pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.db_name_edit = QLineEdit("postgres")
         db_params_layout.addRow("主机:", self.db_host_edit)
