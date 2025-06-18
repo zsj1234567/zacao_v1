@@ -5,11 +5,13 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QMainWindow, QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QFileDialog, QProgressBar, QTextEdit, QComboBox,
-    QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox, QMessageBox, QSizePolicy, QStyleFactory, QSplitter, QRadioButton
+    QCheckBox, QGroupBox, QFormLayout, QSpinBox, QDoubleSpinBox, QMessageBox, QSizePolicy, QStyleFactory, QSplitter, QRadioButton, QScrollArea
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtGui import QPalette, QColor, QFont
 import json # For calibration saving/loading
+import numpy as np
+import traceback
 
 # 导入新的可视化窗口部件
 try:
@@ -90,41 +92,49 @@ class MainWindow(QMainWindow):
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         top_level_layout.addWidget(self.main_splitter)
 
-        # --- 左侧: 配置面板 ---
+        # --- 左侧: 配置面板（先初始化，必须在所有addWidget之前） ---
         self.config_widget = QWidget()
         self.config_widget.setMinimumWidth(450)  # 设置最小宽度
         self.config_widget.setMaximumWidth(1200)  # 设置最大宽度
         self.config_layout = QVBoxLayout(self.config_widget)
         self.config_layout.setSpacing(8)  # 减少组件间距
         self.config_layout.setContentsMargins(0, 0, 0, 0) # 移除边距，由父布局控制
-        # Add config widget to the main splitter
-        self.main_splitter.addWidget(self.config_widget)
 
-        # 设置分割器样式和属性
-        self.main_splitter.setHandleWidth(3)  # 增加手柄宽度，更容易拖动
-        self.main_splitter.setStyleSheet("""
-            QSplitter::handle {
-                background-color: #666666;
-                border: 1px solid #333333;
-                border-radius: 0px;
-                margin: 0px;
-            }
-            QSplitter::handle:hover {
-                background-color: #888888;
-                border: 1px solid #2a82da;
-            }
-            QSplitter::handle:pressed {
-                background-color: #2a82da;
-                border: 1px solid #2a82da;
-            }
-        """)
-
-        # --- 顶部: 输入和输出选择 ---
-        io_group = QGroupBox("输入与输出")
+        # --- 合并数据来源与输入输出为一个面板 ---
+        self.io_group = QGroupBox("数据来源与输入输出")
         io_layout = QVBoxLayout()
-        io_group.setLayout(io_layout)
-        self.config_layout.addWidget(io_group)
-
+        self.io_group.setLayout(io_layout)
+        # 数据来源模式（本地/数据库）
+        source_mode_layout = QHBoxLayout()
+        self.local_radio = QRadioButton("本地目录")
+        self.local_radio.setChecked(True)
+        self.db_radio = QRadioButton("数据库")
+        source_mode_layout.addWidget(self.local_radio)
+        source_mode_layout.addWidget(self.db_radio)
+        source_mode_layout.addStretch()
+        io_layout.addLayout(source_mode_layout)
+        # 数据库参数输入区（初始隐藏）
+        self.db_params_group = QGroupBox("数据库参数")
+        db_params_layout = QFormLayout()
+        self.db_host_edit = QLineEdit("localhost")
+        self.db_port_edit = QLineEdit("5432")
+        self.db_user_edit = QLineEdit("postgres")
+        self.db_pass_edit = QLineEdit()
+        self.db_pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.db_name_edit = QLineEdit("postgres")
+        db_params_layout.addRow("主机:", self.db_host_edit)
+        db_params_layout.addRow("端口:", self.db_port_edit)
+        db_params_layout.addRow("用户名:", self.db_user_edit)
+        db_params_layout.addRow("密码:", self.db_pass_edit)
+        db_params_layout.addRow("数据库:", self.db_name_edit)
+        self.db_connect_button = QPushButton("连接数据库并加载数据")
+        self.db_connect_button.clicked.connect(self.on_db_connect_and_load)
+        self.db_connect_button.setObjectName("load_results_button")
+        self.db_connect_button.setStyleSheet("background-color: #2a82da; color: white; font-weight: bold;")
+        db_params_layout.addRow(self.db_connect_button)
+        self.db_params_group.setLayout(db_params_layout)
+        self.db_params_group.setVisible(False)
+        io_layout.addWidget(self.db_params_group)
         # 输入路径
         input_layout = QHBoxLayout()
         self.input_label = QLabel("输入图片/文件夹:")
@@ -138,7 +148,6 @@ class MainWindow(QMainWindow):
         input_layout.addWidget(self.input_path_edit)
         input_layout.addWidget(self.browse_input_button)
         io_layout.addLayout(input_layout)
-
         # 输出路径
         output_layout = QHBoxLayout()
         self.output_label = QLabel("输出文件夹:")
@@ -152,8 +161,7 @@ class MainWindow(QMainWindow):
         output_layout.addWidget(self.output_path_edit)
         output_layout.addWidget(self.browse_output_button)
         io_layout.addLayout(output_layout)
-
-        # --- 新增：校准文件/文件夹路径 ---
+        # 校准路径
         calibration_layout = QHBoxLayout()
         self.calibration_label = QLabel("校准文件/目录:")
         self.calibration_path_edit = QLineEdit()
@@ -165,8 +173,7 @@ class MainWindow(QMainWindow):
         calibration_layout.addWidget(self.calibration_path_edit)
         calibration_layout.addWidget(self.browse_calibration_button)
         io_layout.addLayout(calibration_layout)
-
-        # --- 新增：加载结果按钮 ---
+        # 加载结果按钮
         load_results_layout = QHBoxLayout()
         self.load_results_button = QPushButton("加载已有结果")
         self.load_results_button.clicked.connect(self.browse_and_load_results)
@@ -175,24 +182,38 @@ class MainWindow(QMainWindow):
         load_results_layout.addStretch()
         load_results_layout.addWidget(self.load_results_button)
         io_layout.addLayout(load_results_layout)
-
-        # --- 调整标签宽度和对齐 (包括新的校准标签) ---
+        # 调整标签宽度和对齐
         input_fm = self.input_label.fontMetrics()
         output_fm = self.output_label.fontMetrics()
         calib_fm = self.calibration_label.fontMetrics()
-        # Use boundingrect for more accurate width
         input_width = input_fm.boundingRect(self.input_label.text()).width()
         output_width = output_fm.boundingRect(self.output_label.text()).width()
         calib_width = calib_fm.boundingRect(self.calibration_label.text()).width()
-        max_label_width = max(input_width, output_width, calib_width) + 10 # Add a small margin
-
-        # 设置固定宽度和右对齐
+        max_label_width = max(input_width, output_width, calib_width) + 10
         self.input_label.setFixedWidth(max_label_width)
         self.input_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.output_label.setFixedWidth(max_label_width)
         self.output_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.calibration_label.setFixedWidth(max_label_width)
         self.calibration_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        # 用滚动区包裹配置面板
+        self.config_layout.addWidget(self.io_group)
+
+        # --- 滚动条视图（必须在用到self.scroll_area前初始化） ---
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setObjectName("config_scroll_area")
+        self.scroll_area.setMinimumWidth(450)
+        self.scroll_area.setMaximumWidth(1200)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.setStyleSheet("QScrollArea { border: none; }")
+
+        self.scroll_area.setWidget(self.config_widget)
+        self.main_splitter.insertWidget(0, self.scroll_area)
+        # 互斥逻辑
+        self.local_radio.toggled.connect(self.on_source_mode_changed)
+        self.db_radio.toggled.connect(self.on_source_mode_changed)
 
         # --- 中部: 分析参数配置 ---
         params_layout = QHBoxLayout()
@@ -877,6 +898,33 @@ class MainWindow(QMainWindow):
 
         logging.info("获取配置。")
 
+        # 数据库模式下，分析流程与本地目录一致，但雷达分析用db_manager
+        if self.is_database_mode() and hasattr(self, 'db_manager') and hasattr(self, 'db_loaded_image_paths'):
+            self.append_log("数据库模式：开始批量分析数据库图片和雷达数据...")
+            config['input_paths'] = self.db_loaded_image_paths
+            if 'input_path' in config:
+                del config['input_path']
+            # 不将db_manager放入config，直接作为参数传递
+            self.last_run_config = config.copy()
+            self.analysis_runner = AnalysisRunner(config, db_manager_ref=self.db_manager)
+            self.analysis_thread = QThread()
+            self.analysis_runner.moveToThread(self.analysis_thread)
+            # 连接信号槽
+            self.analysis_runner.progress_updated.connect(self.update_progress)
+            self.analysis_runner.log_message.connect(self.append_log)
+            self.analysis_runner.analysis_complete.connect(self.on_analysis_complete)
+            self.analysis_thread.started.connect(self.analysis_runner.run)
+            self.analysis_thread.finished.connect(self.analysis_thread.deleteLater)
+            self.analysis_runner.analysis_complete.connect(self.analysis_thread.quit)
+            # 禁用开始按钮，启用停止按钮
+            self.start_button.setEnabled(False)
+            self.stop_button.setEnabled(True)
+            self.set_inputs_enabled(False)
+            # 启动线程
+            self.analysis_thread.start()
+            # 3. 雷达分析结果补充（在on_analysis_complete中处理）
+            return
+
         # --- Calibration Handling ---
         do_calib = config.get('do_calibration', False)
         calib_path_input = config.get('calibration_path')
@@ -1204,6 +1252,36 @@ class MainWindow(QMainWindow):
 
         # 清除之前的结果，但不清除图像列表
         self.image_viewer.clear_results(clear_images=False) # Clear previous results first
+
+        # 数据库模式下，补充雷达高度分析
+        if self.is_database_mode() and hasattr(self, 'db_manager') and hasattr(self, 'db_loaded_image_paths'):
+            from scripts.db_manager import PostgresManager
+            db_manager = self.db_manager
+            for img_path in self.db_loaded_image_paths:
+                lid = self.image_to_lid.get(img_path)
+                try:
+                    X, Y, Z = db_manager.parse_ld_data(lid)
+                    z_max = float(np.nanmax(Z))
+                    z_mean = float(np.nanmean(Z))
+                    z_min = float(np.nanmin(Z))
+                    result = {
+                        "草地高度": f"{z_max:.2f}mm",
+                        "雷达均值": f"{z_mean:.2f}mm",
+                        "雷达最小": f"{z_min:.2f}mm"
+                    }
+                    # 合并已有分析结果
+                    if img_path in self.image_viewer.result_image_map:
+                        old = self.image_viewer.result_image_map[img_path]
+                        result = {**old, **result}
+                    self.image_viewer.set_result_data(img_path, result)
+                except Exception as e:
+                    # 只补充雷达缺失提示
+                    result = {"草地高度": "雷达数据缺失"}
+                    if img_path in self.image_viewer.result_image_map:
+                        old = self.image_viewer.result_image_map[img_path]
+                        result = {**old, **result}
+                    self.image_viewer.set_result_data(img_path, result)
+            self.append_log("已补充所有图片的雷达高度分析结果")
 
         if success:
             # 加载分析摘要文件中的所有结果图像
@@ -1736,6 +1814,68 @@ class MainWindow(QMainWindow):
             # 只切换到原始图像视图，不再切换到结果视图
             self.image_viewer.view_original_button.setChecked(True)
             self.image_viewer._set_view_mode(0, target_image_path=self.latest_image_path)
+
+    def on_source_mode_changed(self):
+        """切换本地/数据库模式时，显示/隐藏相关控件"""
+        if self.local_radio.isChecked():
+            # 本地模式，显示输入输出控件，隐藏数据库控件
+            self.db_params_group.setVisible(False)
+            self.input_path_edit.setEnabled(True)
+            self.browse_input_button.setEnabled(True)
+            self.output_path_edit.setEnabled(True)
+            self.browse_output_button.setEnabled(True)
+            self.lidar_dir_edit.setEnabled(True)
+            self.browse_lidar_button.setEnabled(True)
+        else:
+            # 数据库模式，显示数据库控件，禁用本地输入输出
+            self.db_params_group.setVisible(True)
+            self.input_path_edit.setEnabled(False)
+            self.browse_input_button.setEnabled(False)
+            self.output_path_edit.setEnabled(False)
+            self.browse_output_button.setEnabled(False)
+            self.lidar_dir_edit.setEnabled(False)
+            self.browse_lidar_button.setEnabled(False)
+
+    def on_db_connect_and_load(self):
+        """连接数据库并加载图片到预览列表"""
+        host = self.db_host_edit.text().strip()
+        port = self.db_port_edit.text().strip()
+        user = self.db_user_edit.text().strip()
+        password = self.db_pass_edit.text().strip()
+        dbname = self.db_name_edit.text().strip()
+        try:
+            sys.path.append(os.path.join(project_root, 'scripts'))
+            from scripts.db_manager import PostgresManager
+            self.db_manager = PostgresManager(
+                dbname=dbname, user=user, password=password, host=host, port=port
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "数据库连接失败", str(e))
+            return
+        try:
+            jpeg_records = self.db_manager.get_jpeg_data()
+            if not jpeg_records:
+                QMessageBox.warning(self, "无数据", "未查询到图片数据")
+                return
+            temp_dir = os.path.join(self.default_input_path, "db_temp_images")
+            os.makedirs(temp_dir, exist_ok=True)
+            image_paths = []
+            self.lid_to_image = {}
+            self.image_to_lid = {}
+            for rec in jpeg_records:
+                lid = rec['lid']
+                img_path = self.db_manager.save_jpeg_to_file(lid, output_dir=temp_dir)
+                image_paths.append(img_path)
+                self.lid_to_image[lid] = img_path
+                self.image_to_lid[img_path] = lid
+            self.image_viewer.load_images(image_paths)
+            self.db_loaded_image_paths = image_paths
+            QMessageBox.information(self, "加载成功", f"共加载{len(image_paths)}张图片")
+        except Exception as e:
+            QMessageBox.critical(self, "图片加载失败", str(e))
+
+    def is_database_mode(self):
+        return self.db_radio.isChecked()
 
 # # --- 用于测试 --- #
 if __name__ == '__main__':

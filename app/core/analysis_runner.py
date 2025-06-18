@@ -4,6 +4,8 @@ import traceback
 import os
 import json # For saving summary
 import numpy as np
+import matplotlib.pyplot as plt
+import copy
 
 # 导入分析脚本 - 使用 try-except 以防脚本暂时不存在或路径错误
 try:
@@ -25,9 +27,10 @@ class AnalysisRunner(QObject):
     analysis_complete = pyqtSignal(bool, str) # 成功/失败，完成消息
     analysis_file_completed = pyqtSignal(bool, str, dict) # 成功/失败，文件路径，分析结果
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, db_manager_ref=None):
         super().__init__()
         self.config = config
+        self.db_manager_ref = db_manager_ref
         self.calibration_data = config.get('calibration_data', {}) # Get pre-loaded points
         self._is_running = False
         self.current_analyzer = None # Store the current analyzer instance
@@ -54,6 +57,11 @@ class AnalysisRunner(QObject):
             return
         self.progress_updated.emit(0)
         total_steps = 100 # Total progress steps
+
+        # 移除所有不可序列化对象，防止pickle错误
+        for k in ['db_manager', 'image_to_lid', 'DataProcessor']:
+            if k in self.config:
+                self.config.pop(k)
 
         try:
             input_paths = self.config['input_paths']
@@ -104,38 +112,28 @@ class AnalysisRunner(QObject):
                 current_image_results = {"文件名": os.path.basename(img_path), "分析模型": model_type}
                 image_start_progress = int(i / num_images * image_processing_progress)
                 image_end_progress = int((i + 1) / num_images * image_processing_progress)
-                # Simplified progress updates
                 update_img_progress = lambda percent: self._safe_emit_progress(image_start_progress + int(percent * (image_end_progress - image_start_progress)))
 
                 try:
                     # --- 1. Initialize Analyzer ---
-                    # self.log_message.emit("步骤 1/7: 初始化分析器...")
                     if model_type == 'dl':
                         self.current_analyzer = DeepLearningGrassAnalyzer()
-                        # self.log_message.emit("使用深度学习模型进行分析 (默认模型)。")
                     else:
                         self.current_analyzer = GrassAnalyzer()
-                        # self.log_message.emit(f"使用传统方法 ({segment_method_str}) 进行分析。")
                         if hsv_config_path:
-                             # self.log_message.emit(f"使用 HSV 配置文件: {hsv_config_path}")
                              pass
                     update_img_progress(0.1)
 
                     # --- 2. Load Image ---
-                    # self.log_message.emit("步骤 2/7: 加载图像...")
                     self.current_analyzer.load_image(img_path)
                     update_img_progress(0.2)
 
                     # --- 3. Calibrate Image ---
-                    # self.log_message.emit("步骤 3/7: 应用校准...")
                     points_for_this_image = self.calibration_data.get(img_path)
                     if points_for_this_image:
-                         # self.log_message.emit(f"  - 使用预加载/保存的校准点: {points_for_this_image}")
                          self.current_analyzer.calibrate_image(points=points_for_this_image)
                     else:
-                         # self.log_message.emit("  - 未提供校准点，依赖分析器自动加载或默认行为。")
                          self.current_analyzer.calibrate_image()
-                    # self.log_message.emit("校准应用完成。")
                     update_img_progress(0.3)
 
                     # --- 4. Segment Grass ---
@@ -144,7 +142,6 @@ class AnalysisRunner(QObject):
                          self.current_analyzer.segment_grass()
                     else:
                          self.current_analyzer.segment_grass(method=segment_method_str.lower())
-                    # self.log_message.emit("草地分割完成。")
                     update_img_progress(0.5)
 
                     # --- 5. Calculate Coverage ---
@@ -169,7 +166,6 @@ class AnalysisRunner(QObject):
                              logging.warning(f"计算密度错误 for {img_path}: {density_err}")
                              current_image_results["草地密度"] = "计算失败"
                     else:
-                         # self.log_message.emit("步骤 6/7: 跳过密度计算。")
                          current_image_results["草地密度"] = "未计算"
                     update_img_progress(0.8)
 
@@ -196,73 +192,55 @@ class AnalysisRunner(QObject):
                         for key, path in saved_paths.items():
                             if key != 'analysis_image':
                                 current_image_results[key] = path
-                                # self.log_message.emit(f"  调试图像 [{key}] 已保存: {os.path.basename(path)}") # Keep less verbose
                     else:
                         self.log_message.emit("警告: 未能生成或保存主分析图像。")
                         logging.warning(f"Visualize results failed to return expected paths for {img_path}")
                         current_image_results["结果图路径"] = None
                     update_img_progress(0.9)
 
-                    # --- Image Lidar Analysis (if enabled for this image) ---
-                    if perform_lidar_analysis:
-                        lidar_file_base = os.path.splitext(os.path.basename(img_path))[0]
-                        lidar_file_path = os.path.join(lidar_dir, f"{lidar_file_base}.txt")
-
-                        if os.path.exists(lidar_file_path):
-                            self.log_message.emit(f"  - 开始 Lidar 分析: {os.path.basename(lidar_file_path)}...")
-                            try:
-                                height_results = analyze_point_cloud(
-                                    lidar_file_path,
-                                    output_dir=output_dir,
-                                    eps=dbscan_eps,
-                                    min_samples=dbscan_min_samples
-                                )
-                                if height_results and height_results.get("草高(m)") is not None:
-                                    grass_height_m = height_results["草高(m)"]
-                                    current_image_results["草地高度"] = f"{grass_height_m:.3f}m"
-                                    self.log_message.emit(f"  Lidar 分析完成。草高: {grass_height_m:.3f}m")
-                                    
-                                    # 修复：添加类型检查，确保只对数值使用格式化
-                                    ground_height = height_results.get('地面高度(m)')
-                                    max_height = height_results.get('最大高度(m)')
-                                    
-                                    current_image_results["地面高度"] = f"{ground_height:.3f}m" if isinstance(ground_height, (int, float)) else "N/A"
-                                    current_image_results["最大高度点"] = f"{max_height:.3f}m" if isinstance(max_height, (int, float)) else "N/A"
+                    # --- 数据库模式下雷达分析（每张图片分析后立即处理和显示） ---
+                    db_manager = self.db_manager_ref
+                    try:
+                        if db_manager is not None:
+                            dl_records = db_manager.get_ld_data()
+                            if i < len(dl_records):
+                                dl_row = dl_records[i]
+                                lid = dl_row['lid']
+                                from scripts.db_manager import DataProcessor
+                                processor = DataProcessor(db_manager, output_dir)
+                                stats_file = os.path.join(output_dir, f"ld_stats_{lid}.json")
+                                if not os.path.exists(stats_file):
+                                    processor.process_ld_data()
+                                if os.path.exists(stats_file):
+                                    with open(stats_file, 'r', encoding='utf-8') as f:
+                                        stats = json.load(f)
+                                    z_height = stats.get('filtered_data', {}).get('z_height', None)
+                                    if z_height is not None:
+                                        current_image_results["草地高度"] = f"{z_height:.2f}mm"
+                                    else:
+                                        current_image_results["草地高度"] = "雷达高度缺失"
                                 else:
-                                    self.log_message.emit("  Lidar 分析未返回有效高度。")
-                                    logging.warning(f"Lidar analysis for {lidar_file_path} did not return valid height.")
-                                    current_image_results["草地高度"] = "分析失败或无结果"
-                            except Exception as lidar_err:
-                                self.log_message.emit(f"  Lidar 分析过程中发生错误: {lidar_err}")
-                                logging.error(f"Lidar analysis error for {lidar_file_path}: {traceback.format_exc()}")
-                                current_image_results["草地高度"] = "分析出错"
-                        else:
-                            self.log_message.emit(f"  未找到对应的 Lidar 文件: {os.path.basename(lidar_file_path)}")
-                            logging.warning(f"Lidar file not found: {lidar_file_path}")
-                            current_image_results["草地高度"] = "无数据"
-                    else:
-                         current_image_results["草地高度"] = "未分析"
+                                    current_image_results["草地高度"] = "雷达统计文件缺失"
+                                lidar_3d_path = os.path.join(output_dir, f"3d_scatter_{lid}.png")
+                                lidar_heatmap_path = os.path.join(output_dir, f"heatmap_{lid}.png")
+                                current_image_results["lidar_3dscatter_image"] = lidar_3d_path if os.path.exists(lidar_3d_path) else None
+                                current_image_results["lidar_heatmap_image"] = lidar_heatmap_path if os.path.exists(lidar_heatmap_path) else None
+                                self.log_message.emit(f"  已保存雷达高度热图和3D点云图: {os.path.basename(lidar_heatmap_path)}, {os.path.basename(lidar_3d_path)}")
+                                del processor
+                            else:
+                                current_image_results["草地高度"] = "雷达数据缺失"
+                                self.log_message.emit(f"  雷达数据分析失败: dl表数据不足")
+                    except Exception as e:
+                        current_image_results["草地高度"] = "雷达数据缺失"
+                        self.log_message.emit(f"  雷达数据分析失败: {e}")
 
-                    # Placeholder removal/adjustment if density/calibration not needed
-                    # Remove dummy density if not calculated
-                    if not calculate_density:
-                         current_image_results.pop("density_percentage", None)
-                         current_image_results.pop("calibration_points", None)
-                    else:
-                        # If density was calculated, maybe keep calibration points
-                        current_image_results["calibration_points"] = points_for_this_image # Already a list
-                        # Placeholder density value (replace or remove if real calc added)
-                        density_percentage = np.random.uniform(5.0, 60.0) # Dummy value
-                        current_image_results["density_percentage"] = round(density_percentage, 2)
-
-                    # --- 更新 image_summary 创建逻辑 --- #
-                    # 合并current_image_results和self.current_analyzer.results，只保留UI识别的key
+                    # --- 立即发射单张图片分析完成信号 ---
                     results = {}
                     allowed_keys = set([
                         'traditional_default_analysis', 'analysis_image', 'original_debug_image', 'calibrated_debug_image',
                         'hsv_mask_debug_image', 'coverage_overlay_debug_image', 'instance_mask_debug_image',
                         'instance_overlay_debug_image', 'density_overlay_debug_image',
-                        '草地盖度', '草地密度', '草地高度'
+                        '草地盖度', '草地密度', '草地高度', 'lidar_3dscatter_image', 'lidar_heatmap_image'
                     ])
                     if hasattr(self.current_analyzer, 'results') and isinstance(self.current_analyzer.results, dict):
                         for k, v in self.current_analyzer.results.items():
@@ -271,7 +249,6 @@ class AnalysisRunner(QObject):
                     for k, v in current_image_results.items():
                         if k in allowed_keys:
                             results[k] = v
-                    # 发射analysis_file_completed信号，传递完整results
                     self.analysis_file_completed.emit(True, img_path, results)
 
                     image_summary = current_image_results.copy()
@@ -279,7 +256,7 @@ class AnalysisRunner(QObject):
                     image_summary["状态"] = "成功"
                     all_image_summaries.append(image_summary)
 
-                    self.log_message.emit(f"--- 图像处理完成: {os.path.basename(img_path)} --- ") # Log image completion
+                    self.log_message.emit(f"--- 图像处理完成: {os.path.basename(img_path)} --- ")
 
                 except Exception as img_err:
                     error_msg = f"处理图像 {os.path.basename(img_path)} 时发生严重错误: {img_err}"
@@ -345,8 +322,12 @@ class AnalysisRunner(QObject):
                     all_generated_paths.append(os.path.normpath(debug_path))
             
             all_generated_paths = sorted(list(set(all_generated_paths)))
+            safe_config = copy.deepcopy(self.config)
+            for k in list(safe_config.keys()):
+                if k in ('db_manager', 'image_to_lid'):
+                    safe_config.pop(k)
             json_summary = {
-                "run_config": self.config,
+                "run_config": safe_config,
                 "image_results": all_generated_paths
             }
             summary_file_path = os.path.join(output_dir, "analysis_summary.json")

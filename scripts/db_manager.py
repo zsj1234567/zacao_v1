@@ -409,23 +409,13 @@ class DataProcessor:
         return data_filtered, valid_min, valid_max
         
     def setup_directories(self):
-        """创建必要的输出目录"""
-        # 创建主输出目录
+        """只创建主输出目录，不创建任何子目录，所有输出直接放在output_base_dir根目录下"""
         os.makedirs(self.output_base_dir, exist_ok=True)
-        
-        # 创建子目录
         self.dirs = {
-            'images': os.path.join(self.output_base_dir, 'images'),
-            'depth_maps': os.path.join(self.output_base_dir, 'depth_maps'),
-            'csv': os.path.join(self.output_base_dir, 'csv'),
-            'json': os.path.join(self.output_base_dir, 'json'),
-            'pointcloud': os.path.join(self.output_base_dir, 'pointcloud'),
-            '3d_plots': os.path.join(self.output_base_dir, '3d_plots'),
-            'heatmaps': os.path.join(self.output_base_dir, 'heatmaps')
+            '3d_plots': self.output_base_dir,
+            'heatmaps': self.output_base_dir,
+            'json': self.output_base_dir
         }
-        
-        for dir_path in self.dirs.values():
-            os.makedirs(dir_path, exist_ok=True)
             
     def process_all_data(self):
         """处理所有表的数据"""
@@ -508,13 +498,9 @@ class DataProcessor:
         return df_ptm
         
     def process_ld_data(self) -> pd.DataFrame:
-        """处理激光检测数据"""
+        """处理激光检测数据，所有输出直接放在output_base_dir根目录下"""
         logging.info("开始处理LD数据...")
-        
-        # 获取所有LD数据
         ld_data = self.db_manager.get_ld_data()
-        
-        # 提取基本信息并处理每条记录
         ld_info = []
         for record in ld_data:
             lid = record['lid']
@@ -523,18 +509,12 @@ class DataProcessor:
                 'lqn': record['lqn'],
                 'lct': record['lct']
             })
-            
             try:
-                # 解析激光数据
                 X, Y, Z = self.db_manager.parse_ld_data(lid)
-                
-                # 处理异常值 - 使用综合方法
                 Z_filtered, z_min, z_max = self._remove_outliers(
                     Z, percentile_low=10, percentile_high=90,
                     z_threshold=3.0, method='combined'
                 )
-                
-                # 获取并保存统计信息
                 stats = {
                     'lid': lid,
                     'original_data': {
@@ -570,70 +550,17 @@ class DataProcessor:
                         'outlier_percent': float(np.sum(np.isnan(Z_filtered)) / Z.size * 100)
                     }
                 }
-                
-                # 保存统计信息为JSON
-                stats_file = os.path.join(
-                    self.dirs['json'],
-                    f"ld_stats_{lid}.json"
-                )
+                stats_file = os.path.join(self.output_base_dir, f"ld_stats_{lid}.json")
                 with open(stats_file, 'w') as f:
                     json.dump(stats, f, indent=4)
-                
-                # 保存为深度图
-                # 创建深度图
-                z_normalized = ((Z - Z.min()) * (255.0 / (Z.max() - Z.min()))).astype(np.uint8)
-                z_filtered_normalized = ((Z_filtered - z_min) * (255.0 / (z_max - z_min))).astype(np.uint8)
-                
-                # 创建并保存原始深度图
-                depth_image = Image.fromarray(z_normalized)
-                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                filename = f"depth_map_{lid}_{timestamp}.png"
-                filepath = os.path.join(self.dirs['depth_maps'], filename)
-                depth_image.save(filepath)
-                
-                # 创建并保存过滤后的深度图
-                depth_image_filtered = Image.fromarray(z_filtered_normalized)
-                filename_filtered = f"depth_map_filtered_{lid}_{timestamp}.png"
-                filepath_filtered = os.path.join(self.dirs['depth_maps'], filename_filtered)
-                depth_image_filtered.save(filepath_filtered)
-                
-                logging.info(f"深度图已保存到: {filepath} 和 {filepath_filtered}")
-                
-                # 保存原始点云数据为CSV (每个点的X,Y,Z值)
-                pointcloud_data = []
-                for i in range(60):
-                    for j in range(160):
-                        pointcloud_data.append({
-                            'point_idx': i*160 + j,
-                            'row': i,
-                            'col': j,
-                            'x': X[i, j],
-                            'y': Y[i, j],
-                            'z': Z[i, j],
-                            'z_filtered': Z_filtered[i, j]
-                        })
-                
-                # 将点云数据保存为CSV
-                pc_df = pd.DataFrame(pointcloud_data)
-                pc_path = os.path.join(self.dirs['pointcloud'], f"pointcloud_{lid}.csv")
-                pc_df.to_csv(pc_path, index=False)
-                logging.info(f"点云数据已保存到: {pc_path}")
-                
-                # 创建3D可视化图 (散点图)
-                self._create_3d_scatter_plot(X, Y, Z, Z_filtered, lid, self.dirs['3d_plots'])
-                
-                # 创建热图 (俯视图)
-                self._create_heatmap(Z, Z_filtered, lid, self.dirs['heatmaps'])
-                
+                # 只生成3D点云图和热力图，直接保存在根目录
+                self._create_3d_scatter_plot(X, Y, Z, Z_filtered, lid, self.output_base_dir)
+                self._create_heatmap(Z, Z_filtered, lid, self.output_base_dir)
             except Exception as e:
                 logging.error(f"处理LD数据失败 (lid={lid}): {str(e)}")
                 logging.exception("详细错误信息")
-        
-        # 转换为DataFrame并保存
+        import pandas as pd
         df_ld = pd.DataFrame(ld_info)
-        csv_path = os.path.join(self.dirs['csv'], 'ld_info.csv')
-        df_ld.to_csv(csv_path, index=False)
-        
         return df_ld
         
 
