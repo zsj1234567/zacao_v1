@@ -916,7 +916,7 @@ class GrassAnalyzer:
 
         # 将分析结果和所有图像路径存储到results属性中
         self.results.update({
-            'analysis_image': saved_paths.get('analysis_image', ''),
+            'traditional_default_analysis': saved_paths.get('analysis_image', ''),
             'original_debug_image': saved_paths.get('original_debug_image', ''),
             'calibrated_debug_image': saved_paths.get('calibrated_debug_image', ''),
             'hsv_mask_debug_image': saved_paths.get('hsv_mask_debug_image', ''),

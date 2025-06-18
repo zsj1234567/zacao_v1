@@ -256,11 +256,21 @@ class AnalysisRunner(QObject):
                         current_image_results["density_percentage"] = round(density_percentage, 2)
 
                     # --- 更新 image_summary 创建逻辑 --- #
-                    # 合并current_image_results和self.current_analyzer.results，确保所有分析数据和图像路径都能传递
+                    # 合并current_image_results和self.current_analyzer.results，只保留UI识别的key
                     results = {}
+                    allowed_keys = set([
+                        'traditional_default_analysis', 'analysis_image', 'original_debug_image', 'calibrated_debug_image',
+                        'hsv_mask_debug_image', 'coverage_overlay_debug_image', 'instance_mask_debug_image',
+                        'instance_overlay_debug_image', 'density_overlay_debug_image',
+                        '草地盖度', '草地密度', '草地高度'
+                    ])
                     if hasattr(self.current_analyzer, 'results') and isinstance(self.current_analyzer.results, dict):
-                        results.update(self.current_analyzer.results)
-                    results.update(current_image_results)
+                        for k, v in self.current_analyzer.results.items():
+                            if k in allowed_keys:
+                                results[k] = v
+                    for k, v in current_image_results.items():
+                        if k in allowed_keys:
+                            results[k] = v
                     # 发射analysis_file_completed信号，传递完整results
                     self.analysis_file_completed.emit(True, img_path, results)
 

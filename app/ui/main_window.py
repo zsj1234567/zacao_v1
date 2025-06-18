@@ -1649,17 +1649,15 @@ class MainWindow(QMainWindow):
             # 设置结果数据到图像查看器（分析数据和图像路径都交由set_result_data处理）
             self.image_viewer.set_result_data(file_path, result_data)
 
-            # 如果当前没有显示任何图像，则显示这个新分析的结果
+            # 只在没有显示任何图像时才加载
             if not self.image_viewer.current_image_path:
                 self.image_viewer.load_images([file_path])
                 self.image_viewer.display_image(file_path)
             else:
-                # 如果当前正在显示这个图像，更新其显示
+                # 如果当前正在显示这个图像，更新其显示，但不切换到结果视图
                 if self.image_viewer.current_image_path == file_path:
                     self.image_viewer.display_image(file_path)
-                    # 自动切换到结果视图
-                    self.image_viewer.view_result_button.setChecked(True)
-                    self.image_viewer._set_view_mode(2)
+            # 不再自动切换到结果视图
 
             # 启用结果查看按钮
             self.image_viewer.view_result_button.setEnabled(True)
@@ -1714,25 +1712,30 @@ class MainWindow(QMainWindow):
         self.auto_calibration_radio.setEnabled(enabled)
 
     def reset_auto_switch_timer(self):
-        """重置自动切换计时器，10秒后自动切换到最新图像"""
-        if hasattr(self, 'auto_switch_timer'):
-            self.auto_switch_timer.stop()
+        """重置自动切换计时器，10秒后自动切换到最新原图（仅动态分析模式）"""
+        if not hasattr(self, 'auto_switch_timer'):
+            from PyQt6.QtCore import QTimer
+            self.auto_switch_timer = QTimer(self)
+            self.auto_switch_timer.setSingleShot(True)
+            self.auto_switch_timer.timeout.connect(self.auto_switch_to_latest_original)
+        self.auto_switch_timer.stop()
+        if self.dynamic_analysis_checkbox.isChecked():
             self.auto_switch_timer.start(10000)  # 10秒
-            
+
+    def auto_switch_to_latest_original(self):
+        """自动切换到最新原图（动态分析模式下10秒无鼠标移动）"""
+        if self.dynamic_analysis_checkbox.isChecked() and self.latest_image_path and os.path.exists(self.latest_image_path):
+            # 切换到原始图像视图并显示最新原图
+            self.image_viewer.view_original_button.setChecked(True)
+            self.image_viewer._set_view_mode(0, target_image_path=self.latest_image_path)
+
     def switch_to_latest_image(self):
-        """切换到最新的图像"""
+        """切换到最新的图像（不再自动切换到结果视图）"""
         if self.latest_image_path and os.path.exists(self.latest_image_path):
             self.image_viewer.display_image(self.latest_image_path)
-            # 切换到结果视图模式
-            if self.image_viewer.has_result_for_image(self.latest_image_path):
-                self.image_viewer.view_result_button.setEnabled(True)
-                self.image_viewer.view_result_button.setChecked(True)
-                self.image_viewer._set_view_mode(2)
-                # 更新数据面板
-                self.image_viewer._update_data_panel()
-            else:
-                self.image_viewer.view_original_button.setChecked(True)
-                self.image_viewer._set_view_mode(0)
+            # 只切换到原始图像视图，不再切换到结果视图
+            self.image_viewer.view_original_button.setChecked(True)
+            self.image_viewer._set_view_mode(0, target_image_path=self.latest_image_path)
 
 # # --- 用于测试 --- #
 if __name__ == '__main__':

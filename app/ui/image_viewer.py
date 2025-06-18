@@ -737,7 +737,14 @@ class ImageViewerWidget(QWidget):
         # ... (rest of old logic) ...
 
     def eventFilter(self, source, event):
-        """事件过滤器，用于捕获图形视图上的鼠标点击以进行校准"""
+        """事件过滤器，用于捕获图形视图上的鼠标点击和移动以进行交互和活跃检测"""
+        # 鼠标移动时，通知主窗口重置自动切换计时器
+        if source == self.graphics_view.viewport() and event.type() == event.Type.MouseMove:
+            # 尝试调用主窗口的reset_auto_switch_timer
+            main_window = self.window()
+            if hasattr(main_window, 'reset_auto_switch_timer'):
+                main_window.reset_auto_switch_timer()
+        # 保持原有点击逻辑
         if source == self.graphics_view.viewport() and event.type() == event.Type.MouseButtonPress:
             if self.is_calibration_mode and event.button() == Qt.MouseButton.LeftButton:
                 # Allow adding points only if less than 4
