@@ -23,6 +23,7 @@ class AnalysisRunner(QObject):
     progress_updated = pyqtSignal(int)
     log_message = pyqtSignal(str)
     analysis_complete = pyqtSignal(bool, str) # 成功/失败，完成消息
+    analysis_file_completed = pyqtSignal(bool, str, dict) # 成功/失败，文件路径，分析结果
 
     def __init__(self, config: dict):
         super().__init__()
@@ -30,6 +31,8 @@ class AnalysisRunner(QObject):
         self.calibration_data = config.get('calibration_data', {}) # Get pre-loaded points
         self._is_running = False
         self.current_analyzer = None # Store the current analyzer instance
+        self.current_analysis_runner = None
+        self.current_analysis_thread = None
 
     def run(self):
         """运行分析的核心逻辑"""
@@ -343,6 +346,72 @@ class AnalysisRunner(QObject):
              if hasattr(self.current_analyzer, 'stop') and callable(self.current_analyzer.stop):
                  self.current_analyzer.stop()
         self.log_message.emit("停止信号已发送。等待当前步骤完成...")
+
+    def on_file_analysis_complete(self, success, message):
+        """
+        文件分析完成的回调
+        
+        参数:
+            success: 是否成功
+            message: 完成消息
+        """
+        # 获取当前正在分析的文件路径
+        file_path = ""
+        if self.current_analysis_runner and hasattr(self.current_analysis_runner, 'config'):
+            file_path = self.current_analysis_runner.config.get('input_paths', ['未知文件'])[0]
+        
+        logging.info(f"文件分析完成: {file_path}, 成功: {success}, 消息: {message}")
+        
+        # 获取分析结果
+        results = {}
+        if hasattr(self.current_analysis_runner, 'current_analyzer') and self.current_analysis_runner.current_analyzer:
+            analyzer = self.current_analysis_runner.current_analyzer
+            if hasattr(analyzer, 'results'):
+                results = analyzer.results
+                
+                # 确保结果中包含盖度、密度和高度数据
+                if success:
+                    # 提取盖度数据
+                    if hasattr(analyzer, 'calculate_coverage') and callable(analyzer.calculate_coverage):
+                        try:
+                            coverage = analyzer.calculate_coverage()
+                            results['草地盖度'] = f"{coverage:.2f}%"
+                        except Exception as e:
+                            logging.error(f"计算盖度时出错: {e}")
+                            results['草地盖度'] = "N/A"
+                    
+                    # 提取密度数据
+                    if hasattr(analyzer, 'calculate_density') and callable(analyzer.calculate_density):
+                        try:
+                            density = analyzer.calculate_density()
+                            results['草地密度'] = f"{density} 株/平方米"
+                        except Exception as e:
+                            logging.error(f"计算密度时出错: {e}")
+                            results['草地密度'] = "N/A"
+                    
+                    # 提取高度数据（如果有）
+                    if 'grass_height' in results:
+                        height = results['grass_height']
+                        if isinstance(height, (int, float)):
+                            results['草地高度'] = f"{height:.3f}m"
+                    elif '草高(m)' in results:
+                        height = results['草高(m)']
+                        if isinstance(height, (int, float)):
+                            results['草地高度'] = f"{height:.3f}m"
+                
+        # 添加到已分析文件记录
+        if success:
+            self.files_tracker.add_analyzed_file(file_path, results)
+            
+        # 发出信号
+        self.analysis_file_completed.emit(success, file_path, results)
+        
+        # 清理资源
+        if self.current_analysis_thread:
+            self.current_analysis_thread.quit()
+            self.current_analysis_thread.wait()
+            self.current_analysis_thread = None
+            self.current_analysis_runner = None
 
 # Add a simple check function if needed
 if __name__ == '__main__':

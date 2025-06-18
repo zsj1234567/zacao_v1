@@ -974,6 +974,7 @@ class MainWindow(QMainWindow):
                 pass
 
         # 如果不需要校准或所有校准已完成或使用自动校准
+        # 确保加载所有图像到查看器
         self.image_viewer.load_images(actual_image_paths_list)
         self._proceed_with_analysis(self.last_run_config)
 
@@ -1197,7 +1198,12 @@ class MainWindow(QMainWindow):
         # After analysis, regardless of success/fail, re-enable inputs
         self.set_inputs_enabled(True) # Make sure inputs are re-enabled
 
-        self.image_viewer.clear_results() # Clear previous results first
+        # 保存当前图像路径列表，以便后续恢复
+        current_image_paths = self.image_viewer.image_paths.copy()
+        current_image_path = self.image_viewer.current_image_path
+
+        # 清除之前的结果，但不清除图像列表
+        self.image_viewer.clear_results(clear_images=False) # Clear previous results first
 
         if success:
             # 加载分析摘要文件中的所有结果图像
@@ -1226,7 +1232,7 @@ class MainWindow(QMainWindow):
             if results_list:
                 logging.info(f"从 AnalysisRunner 加载 {len(results_list)} 个结果摘要...")
                 found_any_results = False
-                summary_message = "分析完成:\\n" # 用于最终弹窗的消息
+                summary_message = "分析完成:\n" # 用于最终弹窗的消息
 
                 for i, image_result in enumerate(results_list):
                     # --- 修改：传递整个 image_result 字典 --- #
@@ -1236,18 +1242,36 @@ class MainWindow(QMainWindow):
                          continue
 
                     # 构建简单的摘要文本
-                    summary_message += f"\\n图像 {i+1}: {os.path.basename(original_path)}\\n"
-                    summary_message += f"  盖度: {image_result.get('草地盖度', 'N/A')}\\n"
-                    summary_message += f"  密度: {image_result.get('草地密度', 'N/A')}\\n"
-                    summary_message += f"  高度: {image_result.get('草地高度', 'N/A')}\\n"
+                    summary_message += f"\n图像 {i+1}: {os.path.basename(original_path)}\n"
+                    summary_message += f"  盖度: {image_result.get('草地盖度', 'N/A')}\n"
+                    summary_message += f"  密度: {image_result.get('草地密度', 'N/A')}\n"
+                    summary_message += f"  高度: {image_result.get('草地高度', 'N/A')}\n"
                     result_img_path = image_result.get('结果图路径') # 键名来自 AnalysisRunner
                     if result_img_path and os.path.exists(result_img_path):
-                        summary_message += f"  结果图: {os.path.basename(result_img_path)}\\n"
+                        summary_message += f"  结果图: {os.path.basename(result_img_path)}\n"
                     else:
-                        summary_message += f"  结果图: 未生成或未找到\\n"
+                        summary_message += f"  结果图: 未生成或未找到\n"
 
+                    # 处理结果数据，确保图像路径正确
+                    result_data = {}
+                    for key, value in image_result.items():
+                        if key in ['original_path', '文件名', '分析模型', '状态', '错误信息', '详细错误']:
+                            continue
+                            
+                        if isinstance(value, str) and os.path.exists(value):
+                            if key.endswith('_path'):
+                                result_type = key.replace('_path', '')
+                                result_data[result_type] = value
+                            elif key.endswith('_image'):
+                                result_data[key] = value
+                            elif os.path.isfile(value) and value.endswith(('.png', '.jpg', '.jpeg')):
+                                # 可能是图像文件路径
+                                result_data[key + '_image'] = value
+                        else:
+                            # 保留非路径数据
+                            result_data[key] = value
 
-                    self.image_viewer.set_result_data(original_path, image_result)
+                    self.image_viewer.set_result_data(original_path, result_data)
                     found_any_results = True # 标记至少找到一个条目
                     # --- 结束修改 ---\
 
@@ -1262,6 +1286,20 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "完成", "分析已成功完成，但没有可显示的结果。")
         else:
             QMessageBox.critical(self, "错误", message)
+
+        # --- 恢复原始图像列表 ---
+        if current_image_paths:
+            # 重新加载所有原始图像到预览列表
+            self.image_viewer.load_images(current_image_paths)
+            
+            # 确保选择当前图像
+            if current_image_path and current_image_path in current_image_paths:
+                # 找到对应的项并选中
+                for i in range(self.image_viewer.preview_list.count()):
+                    item = self.image_viewer.preview_list.item(i)
+                    if item and item.data(Qt.ItemDataRole.UserRole) == current_image_path:
+                        self.image_viewer.preview_list.setCurrentItem(item)
+                        break
 
         # --- BEGIN Bug Fix 1: Refresh viewer after analysis (保持不变) ---
         # Ensure the correct view mode button is checked
@@ -1574,69 +1612,102 @@ class MainWindow(QMainWindow):
             self.reset_auto_switch_timer()
         
     def on_dynamic_analysis_file_completed(self, success, file_path, results):
-        """当单个文件分析完成时的处理"""
-        file_name = os.path.basename(file_path)
-        if success:
-            self.append_log(f"文件 {file_name} 分析成功")
+        """处理单个文件分析完成事件"""
+        if not success:
+            self.append_log(f"动态分析失败: {os.path.basename(file_path)}")
+            return
+
+        try:
+            # 解析结果数据
+            if isinstance(results, str):
+                try:
+                    results = json.loads(results)
+                except json.JSONDecodeError:
+                    logging.error(f"无法解析动态分析结果JSON: {results}")
+                    return
+
             # 更新已分析文件计数
+            self.analyzed_files_count += 1
             self.update_analyzed_files_count()
-            
-            # 设置分析结果到图像查看器
-            if hasattr(self, 'image_viewer') and self.image_viewer and results:
-                # 确保结果数据格式正确
-                result_data = {}
-                
-                # 处理不同类型的结果
-                if isinstance(results, dict):
-                    # 从结果中提取关键数据
-                    result_data = results.copy()
+
+            # 构建结果数据字典
+            result_data = {}
+            analysis_data = {}  # 用于存储分析数据（盖度、密度、高度等）
+
+            # 处理结果数据
+            for key, value in results.items():
+                if key in ['original_path', '文件名', '分析模型', '状态', '错误信息', '详细错误']:
+                    continue
                     
-                    # 确保结果图像路径存在
-                    for key, value in results.items():
-                        if key.endswith('_path') and isinstance(value, str) and os.path.exists(value):
-                            result_type = key.replace('_path', '')
-                            result_data[result_type] = value
-                
-                # 设置结果数据
-                self.image_viewer.set_result_data(file_path, result_data)
-                
-                # 启用结果查看按钮
-                self.image_viewer.view_result_button.setEnabled(True)
-                
-                # 切换到结果视图模式
-                self.image_viewer.view_result_button.setChecked(True)
-                self.image_viewer._set_view_mode(2)
-                
+                if isinstance(value, str) and os.path.exists(value):
+                    if key.endswith('_path'):
+                        result_type = key.replace('_path', '')
+                        result_data[result_type] = value
+                    elif key.endswith('_image'):
+                        result_data[key] = value
+                    elif os.path.isfile(value) and value.endswith(('.png', '.jpg', '.jpeg')):
+                        # 可能是图像文件路径
+                        result_data[key + '_image'] = value
+                else:
+                    # 保留非路径数据
+                    result_data[key] = value
+                    # 同时保存到分析数据中
+                    if key in ['草地盖度', '草地密度', '草地高度']:
+                        analysis_data[key] = value
+
+            # 设置结果数据到图像查看器
+            self.image_viewer.set_result_data(file_path, result_data)
+            
+            # 确保分析数据被正确设置
+            if analysis_data:
+                self.image_viewer.analysis_data[file_path] = analysis_data
                 # 更新数据面板
                 self.image_viewer._update_data_panel()
-        else:
-            self.append_log(f"文件 {file_name} 分析失败")
-            
-        # 恢复状态显示
-        if self.dynamic_analysis_manager.is_monitoring():
-            self.dynamic_status_label.setText("监控中")
+
+            # 如果当前没有显示任何图像，则显示这个新分析的结果
+            if not self.image_viewer.current_image_path:
+                self.image_viewer.load_images([file_path])
+                self.image_viewer.display_image(file_path)
+            else:
+                # 如果当前正在显示这个图像，更新其显示
+                if self.image_viewer.current_image_path == file_path:
+                    self.image_viewer.display_image(file_path)
+
+            # 启用结果查看按钮
+            self.image_viewer.view_result_button.setEnabled(True)
+
+            # 更新状态标签
+            self.dynamic_status_label.setText(f"正在分析: {os.path.basename(file_path)}")
             self.dynamic_status_label.setStyleSheet("color: green;")
-        else:
-            self.dynamic_status_label.setText("已停止")
-            self.dynamic_status_label.setStyleSheet("color: gray;")
-            
+
+            # 记录日志
+            self.append_log(f"动态分析完成: {os.path.basename(file_path)}")
+            if '草地盖度' in results:
+                self.append_log(f"  盖度: {results['草地盖度']}")
+            if '草地密度' in results:
+                self.append_log(f"  密度: {results['草地密度']}")
+            if '草地高度' in results:
+                self.append_log(f"  高度: {results['草地高度']}")
+
+        except Exception as e:
+            logging.error(f"处理动态分析结果时出错: {e}")
+            self.append_log(f"处理动态分析结果时出错: {str(e)}")
+
     def on_dynamic_analysis_all_completed(self):
-        """当所有文件分析完成时的处理"""
-        self.append_log("所有新文件分析完成")
+        """处理所有文件分析完成事件"""
+        self.dynamic_status_label.setText("分析完成")
+        self.dynamic_status_label.setStyleSheet("color: blue;")
+        self.append_log("\n--- 动态分析完成 ---")
         
-        # 恢复状态显示
-        if self.dynamic_analysis_manager.is_monitoring():
-            self.dynamic_status_label.setText("监控中")
-            self.dynamic_status_label.setStyleSheet("color: green;")
-        else:
-            self.dynamic_status_label.setText("已停止")
-            self.dynamic_status_label.setStyleSheet("color: gray;")
+        # 确保图像查看器显示最新状态
+        if self.image_viewer.current_image_path:
+            # 重新显示当前图像以更新数据面板
+            self.image_viewer.display_image(self.image_viewer.current_image_path)
             
-            # 恢复按钮状态
-            self.stop_button.setEnabled(False)
-            self.stop_button.setText("停止分析")
-            self.start_button.setEnabled(True)
-            
+            # 确保结果查看按钮可用
+            if self.image_viewer.has_result_for_image(self.image_viewer.current_image_path):
+                self.image_viewer.view_result_button.setEnabled(True)
+
     def on_preview_item_clicked(self, item):
         """处理预览列表项点击事件，重置自动切换计时器"""
         if self.dynamic_analysis_checkbox.isChecked() and hasattr(self, 'auto_switch_timer'):

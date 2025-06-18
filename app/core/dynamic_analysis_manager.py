@@ -162,9 +162,39 @@ class DynamicAnalysisManager(QObject):
                 logging.info(f"未找到校准文件: {calib_file}")
                 # 如果是自动校准模式，可以在这里添加自动校准的代码
                 if calibration_mode == 'auto':
-                    logging.info("使用自动校准模式，跳过手动校准步骤")
-                    # 这里可以添加自动校准的代码
-                    # 目前先留空，直接进入分析流程
+                    logging.info("使用自动校准模式，自动生成校准点")
+                    # 创建校准目录
+                    calib_dir = os.path.dirname(calib_file)
+                    os.makedirs(calib_dir, exist_ok=True)
+                    
+                    # 自动生成校准点（使用图像四角）
+                    try:
+                        # 读取图像获取尺寸
+                        import cv2
+                        import numpy as np
+                        img = cv2.imread(file_path)
+                        if img is not None:
+                            height, width = img.shape[:2]
+                            # 生成四个角点
+                            auto_points = [
+                                [0, 0],                  # 左上
+                                [width - 1, 0],          # 右上
+                                [width - 1, height - 1], # 右下
+                                [0, height - 1]          # 左下
+                            ]
+                            # 保存校准点
+                            with open(calib_file, 'w') as f:
+                                json.dump(auto_points, f)
+                            
+                            # 添加到配置
+                            if 'calibration_data' not in analysis_config:
+                                analysis_config['calibration_data'] = {}
+                            analysis_config['calibration_data'][file_path] = auto_points
+                            logging.info(f"已自动生成校准点: {auto_points}")
+                        else:
+                            logging.warning(f"无法读取图像进行自动校准: {file_path}")
+                    except Exception as e:
+                        logging.error(f"自动校准失败: {e}")
                 else:
                     # 手动模式但没有校准文件，发出警告
                     logging.warning("手动校准模式下未找到校准文件，将使用原始尺寸")
@@ -205,6 +235,36 @@ class DynamicAnalysisManager(QObject):
             if hasattr(analyzer, 'results'):
                 results = analyzer.results
                 
+                # 确保结果中包含盖度、密度和高度数据
+                if success:
+                    # 提取盖度数据
+                    if hasattr(analyzer, 'calculate_coverage') and callable(analyzer.calculate_coverage):
+                        try:
+                            coverage = analyzer.calculate_coverage()
+                            results['草地盖度'] = f"{coverage:.2f}%"
+                        except Exception as e:
+                            logging.error(f"计算盖度时出错: {e}")
+                            results['草地盖度'] = "N/A"
+                    
+                    # 提取密度数据
+                    if hasattr(analyzer, 'calculate_density') and callable(analyzer.calculate_density):
+                        try:
+                            density = analyzer.calculate_density()
+                            results['草地密度'] = f"{density} 株/平方米"
+                        except Exception as e:
+                            logging.error(f"计算密度时出错: {e}")
+                            results['草地密度'] = "N/A"
+                    
+                    # 提取高度数据（如果有）
+                    if 'grass_height' in results:
+                        height = results['grass_height']
+                        if isinstance(height, (int, float)):
+                            results['草地高度'] = f"{height:.3f}m"
+                    elif '草高(m)' in results:
+                        height = results['草高(m)']
+                        if isinstance(height, (int, float)):
+                            results['草地高度'] = f"{height:.3f}m"
+                
         # 添加到已分析文件记录
         if success:
             self.files_tracker.add_analyzed_file(file_path, results)
@@ -219,9 +279,10 @@ class DynamicAnalysisManager(QObject):
             self.current_analysis_thread = None
             self.current_analysis_runner = None
             
+        # 重置分析状态
         self.is_analyzing = False
         
-        # 处理下一个文件
+        # 处理下一个文件（如果有）
         if self.pending_files:
             self.process_next_file()
         else:
