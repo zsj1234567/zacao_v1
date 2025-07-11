@@ -1,0 +1,9 @@
+__pycache__/
+results/
+datasets/
+backup/
+temp/
+input_data/
+output_data/
+lidar_data/
+app/logs/
